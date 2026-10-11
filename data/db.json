@@ -27465,6 +27465,17 @@
       "lastSeen": 1790420214336,
       "lastSeenIso": "2026-09-26T10:56:54.336Z",
       "activity": "Aktif di Aplikasi"
+    },
+    "admin": {
+      "userId": "admin",
+      "displayName": "Administrator",
+      "role": "admin",
+      "avatarUrl": "https://api.dicebear.com/7.x/bottts/svg?seed=Admin&backgroundColor=10b981",
+      "classId": "cls_6a",
+      "isOnline": true,
+      "lastSeen": 1791679557752,
+      "lastSeenIso": "2026-10-11T00:45:57.752Z",
+      "activity": "Aktif di Aplikasi"
     }
   },
   "currentClassId": "cls_6a",
@@ -34874,5 +34885,6 @@
       "createdAt": "2026-09-26T08:08:31.439Z",
       "updatedAt": "2026-09-26T09:49:44.527Z"
     }
-  ]
+  ],
+  "_revision": 1791679557784
 }
