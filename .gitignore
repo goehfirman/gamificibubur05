@@ -12,6 +12,11 @@ data/backups/
 data/*.bak*
 data/.mockData.cjs
 
+# Firebase Service Account Keys
+*serviceAccount*.json
+*firebase-adminsdk*.json
+*firebase-service-account*.json
+
 # User uploads (keep directory structure via .gitkeep)
 uploads/**
 !uploads/**/

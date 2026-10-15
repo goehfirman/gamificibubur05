@@ -1,12 +1,12 @@
 {
-  "projectId": "optical-enterprise-nxctm",
-  "appId": "1:1064918970571:web:6a57f1b8deb2dd8fd42b4e",
-  "apiKey": "AIzaSyBof98JqGX8j1rOBpwj4o5_mfpT6uF3YJk",
-  "authDomain": "optical-enterprise-nxctm.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-gamiclass-0366551a-fc31-4288-8989-f731cc766bd5",
-  "storageBucket": "optical-enterprise-nxctm.firebasestorage.app",
-  "messagingSenderId": "1064918970571",
-  "measurementId": "",
-  "oAuthClientId": "1064918970571-ka45v68b774baq0i70sn2b6g0f6ep59t.apps.googleusercontent.com",
+  "projectId": "gamificlasscibubur05",
+  "appId": "1:887613900574:web:e9a78f05af6957dbea6b0f",
+  "apiKey": "AIzaSyDD-j71tLy2Qp6DZlMV_eEkHIzvPZgovQM",
+  "authDomain": "gamificlasscibubur05.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "gamificlasscibubur05.firebasestorage.app",
+  "messagingSenderId": "887613900574",
+  "measurementId": "G-8RSWW56WJ2",
+  "oAuthClientId": "",
   "recaptchaSiteKey": ""
 }

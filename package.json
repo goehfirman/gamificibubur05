@@ -22,6 +22,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "firebase": "^13.0.0",
+    "firebase-admin": "^14.5.0",
     "js-aruco2": "^2.0.0",
     "katex": "^0.18.9",
     "localforage": "^1.10.0",

@@ -6,6 +6,21 @@ import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 import pg from 'pg';
+import {
+  initFirebase,
+  isFirebaseEnabled,
+  getFirestoreRevision,
+  getFullDbFromFirestore,
+  modifyFirestoreDb,
+  updateFirestoreDoc,
+  deleteFirestoreDoc,
+  bulkDeleteFirestoreDocs,
+  getBoardsFromFirestore,
+  modifyFirestoreBoards,
+  reconcilePointsAndLedger,
+  getFirebaseError,
+  ARRAY_COLLECTIONS
+} from './firebaseStore.js';
 
 const { Pool } = pg;
 const app = express();
@@ -14,6 +29,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cors());
 
+// Inisialisasi Firebase Admin jika environment variables tersedia
+initFirebase();
+
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -21,10 +39,11 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// Fallback PostgreSQL jika digunakan
 let pool = null;
-if (process.env.POSTGRES_URL || process.env.DATABASE_URL) {
+if (!isFirebaseEnabled() && (process.env.POSTGRES_URL || process.env.DATABASE_URL)) {
   pool = new Pool({
-    connectionString: (process.env.POSTGRES_URL || process.env.DATABASE_URL).replace(/\?.*$/, ""), // Hapus parameter seperti ?sslmode=require
+    connectionString: (process.env.POSTGRES_URL || process.env.DATABASE_URL).replace(/\?.*$/, ""),
     ssl: { rejectUnauthorized: false }
   });
   pool.query(`
@@ -41,8 +60,62 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const BOARDS_FILE = path.join(DATA_DIR, 'boards.json');
 
-// --- Helper Functions Database ---
+// Local in-memory safety cache untuk development mode lokal
+let localDbMemory = null;
+let localBoardsMemory = null;
+
+async function readLocalDbSafe() {
+  if (localDbMemory && Object.keys(localDbMemory).length > 2) {
+    return localDbMemory;
+  }
+  try {
+    const data = await fs.readFile(DB_FILE, 'utf-8');
+    localDbMemory = JSON.parse(data);
+    return localDbMemory;
+  } catch {
+    return localDbMemory || {};
+  }
+}
+
+async function writeLocalDbSafe(db) {
+  localDbMemory = db;
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+  } catch (err) {
+    console.warn('Gagal menulis data/db.json lokal:', err.message);
+  }
+}
+
+async function readLocalBoardsSafe() {
+  if (localBoardsMemory && Array.isArray(localBoardsMemory)) {
+    return localBoardsMemory;
+  }
+  try {
+    const data = await fs.readFile(BOARDS_FILE, 'utf-8');
+    localBoardsMemory = JSON.parse(data);
+    return localBoardsMemory;
+  } catch {
+    return localBoardsMemory || [];
+  }
+}
+
+async function writeLocalBoardsSafe(boards) {
+  localBoardsMemory = boards;
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(BOARDS_FILE, JSON.stringify(boards, null, 2));
+  } catch (err) {
+    console.warn('Gagal menulis data/boards.json lokal:', err.message);
+  }
+}
+
+// ─── HELPER FUNCTIONS DATABASE ───────────────────────────────────────────────
+
 async function getFullDb() {
+  if (isFirebaseEnabled()) {
+    return await getFullDbFromFirestore();
+  }
   if (pool) {
     try {
       const result = await pool.query("SELECT data FROM gamiclass_store WHERE id = 'main_db'");
@@ -58,16 +131,14 @@ async function getFullDb() {
     } catch (err) {
       return {};
     }
-  } else {
-    try {
-      return JSON.parse(await fs.readFile(DB_FILE, 'utf-8'));
-    } catch {
-      return {};
-    }
   }
+  return await readLocalDbSafe();
 }
 
 async function modifyDb(modifierFn) {
+  if (isFirebaseEnabled()) {
+    return await modifyFirestoreDb(modifierFn);
+  }
   if (pool) {
     const client = await pool.connect();
     try {
@@ -82,6 +153,7 @@ async function modifyDb(modifierFn) {
       }
 
       db = modifierFn(db);
+      db = reconcilePointsAndLedger(db);
       db._revision = Date.now();
       
       await client.query(
@@ -96,18 +168,20 @@ async function modifyDb(modifierFn) {
     } finally {
       client.release();
     }
-  } else {
-    let db = {};
-    try { db = JSON.parse(await fs.readFile(DB_FILE, 'utf-8')); } catch (e) {}
-    db = modifierFn(db);
-    db._revision = Date.now();
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return db;
   }
+
+  let db = await readLocalDbSafe();
+  db = modifierFn(db);
+  db = reconcilePointsAndLedger(db);
+  db._revision = Date.now();
+  await writeLocalDbSafe(db);
+  return db;
 }
 
 async function getBoards() {
+  if (isFirebaseEnabled()) {
+    return await getBoardsFromFirestore();
+  }
   if (pool) {
     try {
       const result = await pool.query("SELECT data FROM gamiclass_store WHERE id = 'boards'");
@@ -116,16 +190,14 @@ async function getBoards() {
     } catch {
       return [];
     }
-  } else {
-    try {
-      return JSON.parse(await fs.readFile(BOARDS_FILE, 'utf-8'));
-    } catch {
-      return [];
-    }
   }
+  return await readLocalBoardsSafe();
 }
 
 async function modifyBoards(modifierFn) {
+  if (isFirebaseEnabled()) {
+    return await modifyFirestoreBoards(modifierFn);
+  }
   if (pool) {
     const client = await pool.connect();
     try {
@@ -145,61 +217,13 @@ async function modifyBoards(modifierFn) {
     } finally {
       client.release();
     }
-  } else {
-    let boards = [];
-    try { boards = JSON.parse(await fs.readFile(BOARDS_FILE, 'utf-8')); } catch (e) {}
-    boards = modifierFn(boards);
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(BOARDS_FILE, JSON.stringify(boards, null, 2));
-    return boards;
   }
-}
 
-function reconcilePointsAndLedger(dbObj) {
-  if (!dbObj || typeof dbObj !== 'object') return;
-  if (Array.isArray(dbObj.pointLedger)) {
-    const seenKeys = new Set();
-    const dedupedLedger = [];
-    dbObj.pointLedger.forEach(l => {
-      if (!l) return;
-      const key = l.idempotencyKey || l.id;
-      if (!seenKeys.has(key)) {
-        seenKeys.add(key);
-        dedupedLedger.push(l);
-      }
-    });
-    dbObj.pointLedger = dedupedLedger;
-  }
-  if (dbObj.userStats && typeof dbObj.userStats === 'object' && Array.isArray(dbObj.pointLedger)) {
-    const ledgerByUser = {};
-    dbObj.pointLedger.forEach(l => {
-      if (!l || !l.userId) return;
-      ledgerByUser[l.userId] = ledgerByUser[l.userId] || [];
-      ledgerByUser[l.userId].push(l);
-    });
-    Object.keys(dbObj.userStats).forEach(uid => {
-      const userLedgers = ledgerByUser[uid] || [];
-      if (userLedgers.length > 0) {
-        const ledgerTotal = Math.max(0, userLedgers.reduce((sum, l) => sum + (Number(l.amount) || 0), 0));
-        const academicTotal = Math.max(0, userLedgers.filter(l => l.category === 'academic').reduce((sum, l) => sum + (Number(l.amount) || 0), 0));
-        const partTotal = Math.max(0, ledgerTotal - academicTotal);
-        dbObj.userStats[uid] = {
-          ...dbObj.userStats[uid],
-          totalPoints: ledgerTotal,
-          academicPoints: academicTotal,
-          participationPoints: partTotal,
-        };
-      }
-    });
-  }
-  return dbObj;
+  let boards = await readLocalBoardsSafe();
+  boards = modifierFn(boards);
+  await writeLocalBoardsSafe(boards);
+  return boards;
 }
-
-const ARRAY_COLLECTIONS = new Set([
-  'users', 'classes', 'materials', 'assignments', 'missions',
-  'pointLedger', 'chatMessages', 'badges', 'userBadges', 'announcements',
-  'notifications', 'auditLogs', 'quizzes', 'quizSubmissions', 'paperSessions'
-]);
 
 // ─── API ENDPOINTS ──────────────────────────────────────────────────────────
 
@@ -210,6 +234,19 @@ app.get('/api/stream', (req, res) => res.status(204).end());
 app.get('/api/sync', async (req, res) => {
   const since = req.query.since ? Number(req.query.since) : 0;
   
+  if (isFirebaseEnabled()) {
+    const currentRev = await getFirestoreRevision();
+    if (since && currentRev && since === currentRev) {
+      return res.json({ modified: false, revision: currentRev });
+    }
+    const db = await getFullDbFromFirestore();
+    const revision = db._revision || currentRev || Date.now();
+    if (since && since === revision) {
+      return res.json({ modified: false, revision });
+    }
+    return res.json({ modified: true, revision, db });
+  }
+
   if (pool) {
     try {
       const revRes = await pool.query("SELECT data->>'_revision' as rev FROM gamiclass_store WHERE id = 'main_db'");
@@ -281,6 +318,12 @@ app.get('/api/collections/:collection', async (req, res) => {
 app.put('/api/collections/:collection/:id', async (req, res) => {
   if (!req.body || typeof req.body !== 'object') return res.status(400).json({ error: 'Invalid body' });
   const { collection, id } = req.params;
+
+  if (isFirebaseEnabled()) {
+    const revision = await updateFirestoreDoc(collection, id, req.body);
+    return res.json({ success: true, revision });
+  }
+
   const finalDb = await modifyDb((db) => {
     const isArray = ARRAY_COLLECTIONS.has(collection) || Array.isArray(db[collection]);
     if (!db[collection]) db[collection] = isArray ? [] : {};
@@ -300,6 +343,11 @@ app.put('/api/collections/:collection/:id', async (req, res) => {
 app.post('/api/bulk-delete', async (req, res) => {
   const { deletes } = req.body;
   if (!Array.isArray(deletes)) return res.json({ success: true });
+
+  if (isFirebaseEnabled()) {
+    const revision = await bulkDeleteFirestoreDocs(deletes);
+    return res.json({ success: true, revision });
+  }
   
   const finalDb = await modifyDb((db) => {
     for (const { collection, id } of deletes) {
@@ -318,6 +366,12 @@ app.post('/api/bulk-delete', async (req, res) => {
 
 app.delete('/api/collections/:collection/:id', async (req, res) => {
   const { collection, id } = req.params;
+
+  if (isFirebaseEnabled()) {
+    const revision = await deleteFirestoreDoc(collection, id);
+    return res.json({ success: true, revision });
+  }
+
   const finalDb = await modifyDb((db) => {
     if (db[collection]) {
       if (Array.isArray(db[collection])) {
@@ -340,7 +394,7 @@ app.post('/api/boards', async (req, res) => {
 });
 
 app.patch('/api/boards/:id', async (req, res) => {
-  const finalBoards = await modifyBoards((boards) => {
+  await modifyBoards((boards) => {
     const idx = boards.findIndex(b => b.id === req.params.id);
     if (idx >= 0) boards[idx] = { ...boards[idx], ...req.body, updatedAt: new Date().toISOString() };
     return boards;
@@ -488,28 +542,52 @@ app.post('/api/upload', (req, res) => {
   res.status(400).json({ error: 'Serverless deployment expects Base64 embedding. Upload failed.' });
 });
 
+// ─── HEALTH CHECK DIAGNOSTIK ──────────────────────────────────────────────
 app.get('/api/health', async (req, res) => {
-  let dbStatus = 'Offline (Using Local JSON)';
+  let dbProvider = 'Offline (Local JSON data/db.json)';
+  let dbStatus = 'OK';
   let errorMsg = null;
-  if (pool) {
+
+  if (isFirebaseEnabled()) {
+    dbProvider = 'Firebase Firestore';
+    try {
+      const rev = await getFirestoreRevision();
+      dbStatus = `Connected to Firebase Firestore! (Revision: ${rev})`;
+    } catch (e) {
+      dbStatus = 'Connection Error';
+      errorMsg = e.message;
+    }
+  } else if (pool) {
+    dbProvider = 'PostgreSQL';
     try {
       const resCheck = await pool.query('SELECT 1 as connected');
-      dbStatus = resCheck.rows.length > 0 ? 'Connected to Supabase PostgreSQL!' : 'Failed';
+      dbStatus = resCheck.rows.length > 0 ? 'Connected to PostgreSQL!' : 'Failed';
     } catch(e) {
       dbStatus = 'Connection Error';
       errorMsg = e.message;
     }
   } else {
-     errorMsg = 'POSTGRES_URL or DATABASE_URL not found in Vercel Variables.';
+    errorMsg = 'No remote database configured. On Vercel, set FIREBASE_SERVICE_ACCOUNT or (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY) in Environment Variables.';
   }
-  res.json({ status: 'OK', database: dbStatus, error: errorMsg, hasEnv: !!process.env.POSTGRES_URL || !!process.env.DATABASE_URL });
+
+  res.json({
+    status: 'OK',
+    provider: dbProvider,
+    database: dbStatus,
+    error: errorMsg,
+    env: {
+      hasFirebaseServiceAccount: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      hasFirebaseIndividualKeys: !!(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY),
+      hasPostgres: !!(process.env.POSTGRES_URL || process.env.DATABASE_URL),
+      hasGemini: !!(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
+    }
+  });
 });
 
+// ─── AUTO CLEANUP (CRON) ──────────────────────────────────────────────────
 app.get('/api/cleanup', async (req, res) => {
-  // Hanya simpan data 30 hari terakhir
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
   const cutoffTime = Date.now() - THIRTY_DAYS_MS;
-  const cutoffIso = new Date(cutoffTime).toISOString();
 
   let cleanedChat = 0;
   let cleanedBoards = 0;
@@ -555,7 +633,3 @@ app.get('/api/cleanup', async (req, res) => {
 });
 
 export default app;
-
-
-
-
