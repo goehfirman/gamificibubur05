@@ -7,6 +7,7 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
+  onSnapshot,
 } from 'firebase/firestore';
 
 export const COLLECTIONS = {
@@ -35,9 +36,11 @@ export const COLLECTIONS = {
 
 const collectionCache = new Map<string, any[]>();
 const collectionListeners = new Map<string, Set<(data: any[]) => void>>();
+const firestoreUnsubs = new Map<string, () => void>();
 let lastServerRevision = 0;
 let pollingInterval: any = null;
 let isPermissionDenied = false;
+let quotaExceededState = false;
 
 // IndexedDB initialization for offline mode
 const store = localforage.createInstance({
@@ -46,6 +49,25 @@ const store = localforage.createInstance({
 
 export function isFirestorePermissionDenied(): boolean {
   return isPermissionDenied;
+}
+
+export function isFirestoreQuotaExceeded(): boolean {
+  return quotaExceededState;
+}
+
+export function setFirestoreQuotaExceeded(val: boolean) {
+  quotaExceededState = val;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('firestore-quota-exceeded', {
+      detail: { exceeded: val }
+    }));
+  }
+}
+
+export function isQuotaError(err: any): boolean {
+  return err?.code === 'resource-exhausted' ||
+    err?.code === 8 ||
+    (typeof err?.message === 'string' && err.message.includes('RESOURCE_EXHAUSTED'));
 }
 
 function handleFirestoreError(operation: string, collName: string, id: any, err: any) {
@@ -57,6 +79,9 @@ function handleFirestoreError(operation: string, collName: string, id: any, err:
         detail: { collection: collName, error: err.message }
       }));
     }
+  } else if (isQuotaError(err)) {
+    setFirestoreQuotaExceeded(true);
+    console.warn(`[Firestore ${operation}] ⚠️ Kuota Firestore Harian Tercapai (RESOURCE_EXHAUSTED). Menggunakan sinkronisasi database server/lokal.`);
   } else {
     console.warn(`[Firestore ${operation}] Warning (${collName}/${id}):`, err?.message || err);
   }
@@ -122,6 +147,7 @@ function removeDocFromCache(collection: string, docId: string) {
 
 function populateFullCache(db: Record<string, any>) {
   if (!db || typeof db !== 'object') return;
+  const now = Date.now();
   Object.keys(db).forEach((coll) => {
     let val = db[coll];
     if (val == null) return;
@@ -129,7 +155,17 @@ function populateFullCache(db: Record<string, any>) {
       val = Object.values(val);
     }
     if (Array.isArray(val)) {
-      collectionCache.set(coll, val.filter((i: any) => i != null));
+      const incoming = val.filter((i: any) => i != null);
+      const incomingIds = new Set(incoming.map((i: any) => String(i?.id || i?.uid)));
+      // Pertahankan dokumen lokal yang baru dibuat dalam 60 detik terakhir jika belum ada di data server
+      const existing = collectionCache.get(coll) || [];
+      const pendingLocal = existing.filter((item: any) => {
+        const id = String(item?.id || item?.uid);
+        if (!id || incomingIds.has(id)) return false;
+        const created = item?.createdAt ? new Date(item.createdAt).getTime() : now;
+        return now - created < 60000;
+      });
+      collectionCache.set(coll, [...incoming, ...pendingLocal]);
       notifyListeners(coll);
     }
   });
@@ -176,25 +212,31 @@ export async function syncDocToFirestore(collectionName: string, docId: string, 
   const idStr = String(docId);
   updateDocInCache(collectionName, idStr, data);
 
-  // 1. Direct write ke Cloud Firestore
-  try {
-    const docRef = doc(db, collectionName, idStr);
-    await setDoc(docRef, cleanForFirestore(data), { merge: true });
-    isPermissionDenied = false;
-  } catch (err: any) {
-    handleFirestoreError('syncDoc', collectionName, idStr, err);
-  }
+  // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
+  const apiPromise = fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }).catch((err) => {
+    console.warn(`[API syncDoc] ${collectionName}/${idStr}:`, err);
+  });
 
-  // 2. Dual-sync ke Serverless API / Local API
-  try {
-    await fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  } catch (err) {
-    // Offline mode: already updated cache, will sync later
-  }
+  // 2. Direct write ke Cloud Firestore dengan timeout 2500ms agar jika kuota habis / offline tidak menggantung
+  const firestorePromise = (async () => {
+    try {
+      const docRef = doc(db, collectionName, idStr);
+      const writeTask = setDoc(docRef, cleanForFirestore(data), { merge: true });
+      const timeoutTask = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('FIRESTORE_WRITE_TIMEOUT')), 2500)
+      );
+      await Promise.race([writeTask, timeoutTask]);
+      isPermissionDenied = false;
+    } catch (err: any) {
+      handleFirestoreError('syncDoc', collectionName, idStr, err);
+    }
+  })();
+
+  await Promise.allSettled([apiPromise, firestorePromise]);
 }
 
 /**
@@ -204,33 +246,41 @@ export async function bulkDeleteFromFirestore(deletes: { collection: string, id:
   if (!Array.isArray(deletes) || deletes.length === 0) return;
   deletes.forEach(d => removeDocFromCache(d.collection, String(d.id)));
 
-  // 1. Direct batch delete ke Cloud Firestore
-  try {
-    const batch = writeBatch(db);
-    let count = 0;
-    for (const d of deletes) {
-      if (d.collection && d.id) {
-        batch.delete(doc(db, d.collection, String(d.id)));
-        count++;
-      }
-    }
-    if (count > 0) {
-      await batch.commit();
-      isPermissionDenied = false;
-      console.log(`[Firestore] Bulk delete ${count} dokumen berhasil di Cloud Firestore.`);
-    }
-  } catch (err: any) {
-    handleFirestoreError('bulkDelete', 'multiple', deletes.length, err);
-  }
+  // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
+  const apiPromise = fetch('/api/bulk-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deletes })
+  }).catch((err) => {
+    console.warn('[API bulkDelete]:', err);
+  });
 
-  // 2. Dual-sync ke Serverless API / Local API
-  try {
-    await fetch('/api/bulk-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deletes })
-    });
-  } catch (err) {}
+  // 2. Direct batch delete ke Cloud Firestore dengan timeout 2500ms
+  const firestorePromise = (async () => {
+    try {
+      const batch = writeBatch(db);
+      let count = 0;
+      for (const d of deletes) {
+        if (d.collection && d.id) {
+          batch.delete(doc(db, d.collection, String(d.id)));
+          count++;
+        }
+      }
+      if (count > 0) {
+        const batchTask = batch.commit();
+        const timeoutTask = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('FIRESTORE_WRITE_TIMEOUT')), 2500)
+        );
+        await Promise.race([batchTask, timeoutTask]);
+        isPermissionDenied = false;
+        console.log(`[Firestore] Bulk delete ${count} dokumen berhasil di Cloud Firestore.`);
+      }
+    } catch (err: any) {
+      handleFirestoreError('bulkDelete', 'multiple', deletes.length, err);
+    }
+  })();
+
+  await Promise.allSettled([apiPromise, firestorePromise]);
 }
 
 /**
@@ -240,27 +290,37 @@ export async function deleteDocFromFirestore(collectionName: string, docId: stri
   const idStr = String(docId);
   removeDocFromCache(collectionName, idStr);
 
-  // 1. Direct delete ke Cloud Firestore
-  try {
-    const docRef = doc(db, collectionName, idStr);
-    await deleteDoc(docRef);
-    isPermissionDenied = false;
-    console.log(`[Firestore] Dokumen ${collectionName}/${idStr} berhasil dihapus dari Cloud Firestore.`);
-  } catch (err: any) {
-    handleFirestoreError('deleteDoc', collectionName, idStr, err);
-  }
+  // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
+  const apiPromise = fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
+    method: 'DELETE'
+  }).catch((err) => {
+    console.warn(`[API deleteDoc] ${collectionName}/${idStr}:`, err);
+  });
 
-  // 2. Dual-sync ke Serverless API / Local API
-  try {
-    await fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, { method: 'DELETE' });
-  } catch (err) {}
+  // 2. Direct delete ke Cloud Firestore dengan timeout 2500ms
+  const firestorePromise = (async () => {
+    try {
+      const docRef = doc(db, collectionName, idStr);
+      const deleteTask = deleteDoc(docRef);
+      const timeoutTask = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('FIRESTORE_WRITE_TIMEOUT')), 2500)
+      );
+      await Promise.race([deleteTask, timeoutTask]);
+      isPermissionDenied = false;
+      console.log(`[Firestore] Dokumen ${collectionName}/${idStr} berhasil dihapus dari Cloud Firestore.`);
+    } catch (err: any) {
+      handleFirestoreError('deleteDoc', collectionName, idStr, err);
+    }
+  })();
+
+  await Promise.allSettled([apiPromise, firestorePromise]);
 }
 
 /**
  * Memuat seluruh database: memprioritaskan API Backend, lalu Firestore Web SDK, lalu IndexedDB
  */
 export async function loadAllFromFirestore() {
-  const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3') || {};
+  const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v5') || {};
 
   // 1. Coba ambil dari server API /api/db
   try {
@@ -274,17 +334,21 @@ export async function loadAllFromFirestore() {
     }
   } catch (err) {}
 
-  // 2. Fallback: Coba ambil langsung dari Cloud Firestore Web SDK
+  // 2. Fallback: Coba ambil langsung dari Cloud Firestore Web SDK dengan timeout
   try {
     const loadedData: Record<string, any> = {};
     let hasData = false;
 
     for (const collName of Object.values(COLLECTIONS)) {
       try {
-        const snap = await getDocs(collection(db, collName));
+        const fetchTask = getDocs(collection(db, collName));
+        const timeoutTask = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('FIRESTORE_GET_TIMEOUT')), 3000)
+        );
+        const snap: any = await Promise.race([fetchTask, timeoutTask]);
         if (!snap.empty) {
           hasData = true;
-          loadedData[collName] = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+          loadedData[collName] = snap.docs.map((d: any) => ({ ...d.data(), id: d.id }));
         }
       } catch (e) {}
     }
@@ -298,10 +362,46 @@ export async function loadAllFromFirestore() {
   return offlineDb;
 }
 
+function ensureFirestoreRealtimeListener(collName: string) {
+  if (typeof window === 'undefined') return;
+  if (firestoreUnsubs.has(collName)) return;
+
+  try {
+    const collRef = collection(db, collName);
+    const unsub = onSnapshot(collRef, (snapshot) => {
+      if (snapshot.empty && !collectionCache.has(collName)) {
+        return;
+      }
+      const firestoreItems = snapshot.docs.map(d => ({ ...d.data(), id: d.id, uid: d.id }));
+      if (firestoreItems.length > 0) {
+        const now = Date.now();
+        const existing = collectionCache.get(collName) || [];
+        const incomingIds = new Set(firestoreItems.map((i: any) => String(i?.id || i?.uid)));
+        const pendingLocal = existing.filter((item: any) => {
+          const id = String(item?.id || item?.uid);
+          if (!id || incomingIds.has(id)) return false;
+          const created = item?.createdAt ? new Date(item.createdAt).getTime() : now;
+          return now - created < 60000;
+        });
+        collectionCache.set(collName, [...firestoreItems, ...pendingLocal]);
+        notifyListeners(collName);
+        persistCache();
+      }
+    }, (err) => {
+      handleFirestoreError('onSnapshot', collName, 'all', err);
+    });
+    firestoreUnsubs.set(collName, unsub);
+  } catch (err) {
+    console.warn(`[Firestore onSnapshot setup] ${collName}:`, err);
+  }
+}
+
 export function subscribeToRealtimeCollection(collection: string, callback: (data: any[]) => void) {
   if (!collectionListeners.has(collection)) collectionListeners.set(collection, new Set());
   collectionListeners.get(collection)!.add(callback);
   
+  ensureFirestoreRealtimeListener(collection);
+
   if (collectionCache.has(collection)) {
     callback(collectionCache.get(collection)!);
   }
@@ -396,10 +496,6 @@ export async function setUserOffline(userId: string) {
   return deleteDocFromFirestore(COLLECTIONS.USER_PRESENCE, userId);
 }
 
-export function isFirestoreQuotaExceeded() { return false; }
-export function setFirestoreQuotaExceeded(val: boolean) {}
-export function isQuotaError(err: any) { return false; }
-
 export async function submitPaperAnswersBatch(sessionId: string, questionIndex: number, answers: any[]) {
   try {
     const res = await fetch(`/api/paper-sessions/${encodeURIComponent(sessionId)}/answers-batch`,  {
@@ -443,7 +539,7 @@ export async function seedFirestoreIfEmpty() {
   try {
     const usersSnap = await getDocs(collection(db, COLLECTIONS.USERS));
     if (usersSnap.empty) {
-      const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3');
+      const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v5');
       if (offlineDb && Object.keys(offlineDb).length > 2) {
         await syncAllStateToFirestore(offlineDb);
       }

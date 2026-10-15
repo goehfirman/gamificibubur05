@@ -200,6 +200,14 @@ export const AdminDashboard: React.FC = () => {
     }
 
     await saveTeacher(userToSave);
+    if (userToSave.classIds && userToSave.classIds.length > 0) {
+      userToSave.classIds.forEach((cId) => {
+        const cls = classes.find((c) => c.id === cId);
+        if (cls && !cls.teacherIds?.includes(userToSave.uid)) {
+          updateClass(cId, { teacherIds: [...(cls.teacherIds || []), userToSave.uid] });
+        }
+      });
+    }
     setIsTeacherModalOpen(false);
   };
 
