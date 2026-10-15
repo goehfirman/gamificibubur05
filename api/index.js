@@ -65,9 +65,6 @@ let localDbMemory = null;
 let localBoardsMemory = null;
 
 async function readLocalDbSafe() {
-  if (localDbMemory && Object.keys(localDbMemory).length > 2) {
-    return localDbMemory;
-  }
   try {
     const data = await fs.readFile(DB_FILE, 'utf-8');
     localDbMemory = JSON.parse(data);

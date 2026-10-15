@@ -60,7 +60,7 @@ import {
 } from '../lib/firestoreSync';
 import { safeStorage, safeSessionStorage } from '../utils/storage';
 
-const STORAGE_KEY = 'classroom_gamifikasi_v2_data';
+const STORAGE_KEY = 'classroom_gamifikasi_v3_data';
 const SESSION_USER_KEY = 'classroom_gamifikasi_session_user';
 
 interface AppContextType {

@@ -139,7 +139,7 @@ function populateFullCache(db: Record<string, any>) {
 // Load from offline storage immediately on boot
 async function initOfflineCache() {
   try {
-    const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache');
+    const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3');
     if (offlineDb) populateFullCache(offlineDb);
   } catch (err) {
     console.warn('Failed to load offline DB:', err);
@@ -260,7 +260,7 @@ export async function deleteDocFromFirestore(collectionName: string, docId: stri
  * Memuat seluruh database: memprioritaskan API Backend, lalu Firestore Web SDK, lalu IndexedDB
  */
 export async function loadAllFromFirestore() {
-  const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache') || {};
+  const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3') || {};
 
   // 1. Coba ambil dari server API /api/db
   try {
@@ -443,7 +443,7 @@ export async function seedFirestoreIfEmpty() {
   try {
     const usersSnap = await getDocs(collection(db, COLLECTIONS.USERS));
     if (usersSnap.empty) {
-      const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache');
+      const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3');
       if (offlineDb && Object.keys(offlineDb).length > 2) {
         await syncAllStateToFirestore(offlineDb);
       }

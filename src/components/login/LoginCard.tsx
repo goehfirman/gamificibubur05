@@ -12,29 +12,46 @@ interface LoginCardProps {
 }
 
 export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
-  const { users, setCurrentClassId } = useApp();
+  const { users, classes, currentClassId, setCurrentClassId } = useApp();
 
   const [activeTab, setActiveTab] = useState<'student' | 'teacher' | 'admin'>('student');
   const [adminUsername, setAdminUsername] = useState('admin');
   const [adminPassword, setAdminPassword] = useState('');
 
-  // All students from the system
-  const students = useMemo(() => {
-    return users.filter((u) => u.role === 'student');
-  }, [users]);
+  // Selected class for student login
+  const [selectedClassId, setSelectedClassId] = useState<string>('');
+
+  useEffect(() => {
+    if (classes && classes.length > 0) {
+      if (!selectedClassId || !classes.some((c) => c.id === selectedClassId)) {
+        const defaultClass = classes.find((c) => c.id === currentClassId) || classes[0];
+        setSelectedClassId(defaultClass.id);
+      }
+    }
+  }, [classes, currentClassId, selectedClassId]);
+
+  // Students belonging to the selected class
+  const studentsInClass = useMemo(() => {
+    if (!selectedClassId) return [];
+    return users.filter((u) => {
+      if (u.role !== 'student') return false;
+      const cIds = u.classIds || ((u as any).classId ? [(u as any).classId] : []);
+      return cIds.includes(selectedClassId);
+    });
+  }, [users, selectedClassId]);
 
   const [selectedStudent, setSelectedStudent] = useState<UserType | null>(null);
 
-  // Auto-select first student if none selected or if list updates
+  // Auto-select first student in this class if none selected or if list updates
   useEffect(() => {
-    if (students.length > 0) {
-      if (!selectedStudent || !students.some((s) => s.uid === selectedStudent.uid)) {
-        setSelectedStudent(students[0]);
+    if (studentsInClass.length > 0) {
+      if (!selectedStudent || !studentsInClass.some((s) => s.uid === selectedStudent.uid)) {
+        setSelectedStudent(studentsInClass[0]);
       }
     } else {
       setSelectedStudent(null);
     }
-  }, [students, selectedStudent]);
+  }, [studentsInClass, selectedStudent]);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -58,9 +75,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
           });
         } catch (e) {}
 
-        if (student.classIds?.[0]) {
-          setCurrentClassId(student.classIds[0]);
-        }
+        const targetClassId = selectedClassId || student.classIds?.[0] || 'cls_6a';
+        setCurrentClassId(targetClassId);
 
         onLoginSuccess(student.uid, 'student');
       } else {
@@ -233,7 +249,13 @@ export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
         {/* Form */}
         {activeTab === 'student' ? (
           <StudentLogin
-            students={students}
+            classes={classes}
+            selectedClassId={selectedClassId}
+            onSelectClass={(classId) => {
+              setSelectedClassId(classId);
+              setErrorMessage(null);
+            }}
+            students={studentsInClass}
             selectedStudent={selectedStudent}
             onSelectStudent={setSelectedStudent}
             onSubmit={handleStudentSubmit}
