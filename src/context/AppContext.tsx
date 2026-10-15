@@ -112,7 +112,7 @@ interface AppContextType {
   changePassword: (newPass: string) => void;
   addClass: (newClass: Omit<ClassRoom, 'id' | 'createdAt'>) => ClassRoom;
   updateClass: (classId: string, updates: Partial<ClassRoom>) => void;
-  deleteClass: (classId: string) => void;
+  deleteClass: (classId: string) => Promise<void>;
   
   // Student Actions
   markMaterialCompleted: (materialId: string) => void;
@@ -1032,6 +1032,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Storage cache error:', e);
       }
     }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [data]);
+
+  // Otomatis real-time sinkronisasi ke Cloud Firestore & Server setiap data berubah
+  useEffect(() => {
+    if (!hasLoadedCloudRef.current) return;
+    const timer = setTimeout(() => {
+      syncAllStateToFirestore(data).catch(() => {});
+    }, 2000);
 
     return () => clearTimeout(timer);
   }, [data]);
@@ -3695,13 +3705,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const deleteClass = (classId: string) => {
-    setData((prev: any) => ({
-      ...prev,
-      classes: (prev.classes || []).filter((c: ClassRoom) => c.id !== classId),
-    }));
+  const deleteClass = async (classId: string) => {
+    setData((prev: any) => {
+      const updatedClasses = (prev.classes || []).filter((c: ClassRoom) => c.id !== classId);
+      const updatedUsers = (prev.users || []).map((u: User) => {
+        if (Array.isArray(u.classIds) && u.classIds.includes(classId)) {
+          return { ...u, classIds: u.classIds.filter((cid: string) => cid !== classId) };
+        }
+        return u;
+      });
+      return {
+        ...prev,
+        classes: updatedClasses,
+        users: updatedUsers,
+      };
+    });
 
-    syncDocToFirestore(COLLECTIONS.CLASSES, classId, { id: classId, status: 'archived', _deleted: true });
+    await deleteDocFromFirestore(COLLECTIONS.CLASSES, classId);
   };
 
   const resetToInitialData = async () => {
