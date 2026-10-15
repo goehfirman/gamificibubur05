@@ -313,7 +313,7 @@ export const AdminDashboard: React.FC = () => {
         `Yakin ingin menghapus ${cls?.name || 'kelas ini'}? Terdapat ${studentCount} siswa terdaftar di kelas ini.`
       )
     ) {
-      deleteClass(classId);
+      await deleteClass(classId);
     }
   };
 

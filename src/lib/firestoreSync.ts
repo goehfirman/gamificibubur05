@@ -95,7 +95,7 @@ async function persistCache() {
   collectionCache.forEach((value, key) => {
     obj[key] = value;
   });
-  await store.setItem('offline_db_cache', obj);
+  await store.setItem('offline_db_cache_v5', obj);
 }
 
 function updateDocInCache(collection: string, docId: string, data: any) {
@@ -139,7 +139,7 @@ function populateFullCache(db: Record<string, any>) {
 // Load from offline storage immediately on boot
 async function initOfflineCache() {
   try {
-    const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v3');
+    const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache_v5');
     if (offlineDb) populateFullCache(offlineDb);
   } catch (err) {
     console.warn('Failed to load offline DB:', err);

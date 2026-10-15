@@ -60,8 +60,27 @@ import {
 } from '../lib/firestoreSync';
 import { safeStorage, safeSessionStorage } from '../utils/storage';
 
-const STORAGE_KEY = 'classroom_gamifikasi_v3_data';
+const STORAGE_KEY = 'classroom_gamifikasi_v5_data';
 const SESSION_USER_KEY = 'classroom_gamifikasi_session_user';
+const DELETED_IDS_STORAGE_KEY = 'gamificlass_deleted_ids_v2';
+
+function getStoredDeletedIds(): Set<string> {
+  try {
+    const raw = safeStorage.getItem(DELETED_IDS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr);
+    }
+  } catch (e) {}
+  return new Set();
+}
+
+function saveDeletedIds(ids: Set<string>) {
+  try {
+    const arr = Array.from(ids).slice(-500);
+    safeStorage.setItem(DELETED_IDS_STORAGE_KEY, JSON.stringify(arr));
+  } catch (e) {}
+}
 
 interface AppContextType {
   currentUser: User | null;
@@ -219,14 +238,14 @@ export const sortItemsNewestFirst = <T extends any>(items: T[]): T[] => {
 };
 
 // Intelligent bi-directional merge between local state and cloud data
-function mergeLocalAndCloud(local: any, cloud: any) {
+function mergeLocalAndCloud(local: any, cloud: any, deletedIds: Set<string> = new Set()) {
   if (!cloud) return local;
 
   const now = Date.now();
 
   // 1. Merge Users: Cloud is strictly authoritative
   const userMap = new Map<string, any>();
-  const cloudUsers = (cloud.users || []).filter((u: any) => u?.uid);
+  const cloudUsers = (cloud.users || []).filter((u: any) => u?.uid && !deletedIds.has(u.uid));
   const cloudUids = new Set(cloudUsers.map((u: any) => u.uid));
 
   cloudUsers.forEach((u: any) => {
@@ -246,7 +265,7 @@ function mergeLocalAndCloud(local: any, cloud: any) {
 
   if (cloudUids.size > 0) {
     (local.users || []).forEach((u: any) => {
-      if (!u?.uid || cloudUids.has(u.uid)) return;
+      if (!u?.uid || cloudUids.has(u.uid) || deletedIds.has(u.uid)) return;
       const created = new Date(u.createdAt || 0).getTime();
       if (now - created < 15000) {
         userMap.set(u.uid, u);
@@ -254,7 +273,7 @@ function mergeLocalAndCloud(local: any, cloud: any) {
     });
   } else {
     (local.users || []).forEach((u: any) => {
-      if (u?.uid) userMap.set(u.uid, u);
+      if (u?.uid && !deletedIds.has(u.uid)) userMap.set(u.uid, u);
     });
   }
 
@@ -275,15 +294,19 @@ function mergeLocalAndCloud(local: any, cloud: any) {
     });
   }
 
-  // 3. Merge Classes
-  const classMap = new Map<string, any>();
-  (local.classes || []).forEach((c: any) => { if (c?.id) classMap.set(c.id, c); });
-  (cloud.classes || []).forEach((c: any) => {
-    if (c?.id) {
-      const existing = classMap.get(c.id);
-      classMap.set(c.id, existing ? { ...existing, ...c } : c);
-    }
-  });
+  // 3. Merge Classes: Cloud is strictly authoritative
+  let mergedClasses: any[] = [];
+  if (Array.isArray(cloud.classes)) {
+    const cloudClassIds = new Set(cloud.classes.map((c: any) => c.id));
+    const pendingLocal = (local.classes || []).filter((c: any) => {
+      if (!c?.id || cloudClassIds.has(c.id) || deletedIds.has(c.id)) return false;
+      const created = new Date(c.createdAt || 0).getTime();
+      return now - created < 10000;
+    });
+    mergedClasses = [...cloud.classes.filter((c: any) => c && c.id && !deletedIds.has(c.id)), ...pendingLocal];
+  } else {
+    mergedClasses = (local.classes || []).filter((c: any) => c && c.id && !deletedIds.has(c.id));
+  }
 
   // 4. Merge Materials: Cloud is authoritative
   let mergedMaterials: any[] = [];
@@ -474,8 +497,8 @@ function mergeLocalAndCloud(local: any, cloud: any) {
   return {
     ...local,
     school: cloud.school ? { ...local.school, ...cloud.school } : local.school,
-    classes: Array.from(classMap.values()),
-    users: Array.from(userMap.values()),
+    classes: mergedClasses,
+    users: Array.from(userMap.values()).filter((u: any) => u?.uid && !deletedIds.has(u.uid)),
     userStats: mergedStats,
     materials: mergedMaterials,
     materialProgress: mergedMatProg,
@@ -510,7 +533,7 @@ function mergeLocalAndCloud(local: any, cloud: any) {
 }
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const deletedItemIds = useRef<Set<string>>(new Set());
+  const deletedItemIds = useRef<Set<string>>(getStoredDeletedIds());
   
   // Load initial from storage or defaults
   const [data, setData] = useState(() => {
@@ -615,7 +638,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const cloudData = await loadAllFromFirestore();
         if (isMounted && cloudData) {
           setData((prev: any) => {
-            const merged = mergeLocalAndCloud(prev, cloudData);
+            const merged = mergeLocalAndCloud(prev, cloudData, deletedItemIds.current);
             return merged;
           });
           hasLoadedCloudRef.current = true;
@@ -625,8 +648,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubSubmissions = subscribeToRealtimeCollection(COLLECTIONS.SUBMISSIONS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const updatedSubs = { ...prev.submissions };
-            items.forEach((sub: any) => {
+            const updatedSubs: Record<string, any> = {};
+            (items || []).forEach((sub: any) => {
+              if (deletedItemIds.current.has(sub.id) || (sub.userId && deletedItemIds.current.has(sub.userId))) return;
               if (sub.id) {
                 updatedSubs[sub.id] = sub;
               }
@@ -655,7 +679,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const unsubAnnouncements = subscribeToRealtimeCollection(COLLECTIONS.ANNOUNCEMENTS, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => ({ ...prev, announcements: items as Announcement[] }));
+          const valid = (items || []).filter((an: any) => an && an.id && !deletedItemIds.current.has(an.id));
+          setData((prev: any) => ({ ...prev, announcements: valid as Announcement[] }));
         });
         unsubList.push(unsubAnnouncements);
 
@@ -690,55 +715,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const unsubClasses = subscribeToRealtimeCollection(COLLECTIONS.CLASSES, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => {
-            const classMap = new Map((prev.classes || []).map((c: any) => [c.id, c]));
-            items.forEach((c: any) => {
-              if (c && c.id) {
-                if (c.status === 'archived' && c._deleted) {
-                  classMap.delete(c.id);
-                } else {
-                  classMap.set(c.id, c);
-                }
-              }
-            });
-            return { ...prev, classes: Array.from(classMap.values()) };
-          });
+          const validClasses = (items || []).filter((c: any) => c && c.id && !deletedItemIds.current.has(c.id));
+          setData((prev: any) => ({ ...prev, classes: validClasses }));
         });
         unsubList.push(unsubClasses);
 
         const unsubUserStats = subscribeToRealtimeCollection(COLLECTIONS.USER_STATS, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => {
-            const updated = { ...prev.userStats };
-            items.forEach((st: any) => {
-              const id = st.uid || st.id;
-              if (id) updated[id] = st;
-            });
-            return { ...prev, userStats: updated };
+          const updated: Record<string, any> = {};
+          (items || []).forEach((st: any) => {
+            const id = st.uid || st.id;
+            if (id && !deletedItemIds.current.has(id)) {
+              updated[id] = st;
+            }
           });
+          setData((prev: any) => ({ ...prev, userStats: updated }));
         });
         unsubList.push(unsubUserStats);
 
         const unsubPointLedger = subscribeToRealtimeCollection(COLLECTIONS.POINT_LEDGER, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => {
-            const ledgerMap = new Map((prev.pointLedger || []).map((pl: any) => [pl.id, pl]));
-            items.forEach((pl: any) => {
-              if (pl.id) ledgerMap.set(pl.id, pl);
-            });
-            const sorted = Array.from(ledgerMap.values()).sort(
-              (a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-            );
-            return { ...prev, pointLedger: sorted };
-          });
+          const valid = (items || []).filter((pl: any) => pl && pl.id && !deletedItemIds.current.has(pl.id) && !deletedItemIds.current.has(pl.userId));
+          const sorted = valid.sort(
+            (a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+          );
+          setData((prev: any) => ({ ...prev, pointLedger: sorted }));
         });
         unsubList.push(unsubPointLedger);
 
         const unsubMatProgress = subscribeToRealtimeCollection(COLLECTIONS.MATERIAL_PROGRESS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const updated = { ...prev.materialProgress };
-            items.forEach((p: any) => {
+            const updated: Record<string, any> = {};
+            (items || []).forEach((p: any) => {
+              if (deletedItemIds.current.has(p.userId)) return;
               const key = `${p.materialId}_${p.userId}`;
               updated[key] = p;
             });
@@ -750,8 +760,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubMisProgress = subscribeToRealtimeCollection(COLLECTIONS.MISSION_PROGRESS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const updated = { ...prev.missionProgress };
-            items.forEach((p: any) => {
+            const updated: Record<string, any> = {};
+            (items || []).forEach((p: any) => {
+              if (deletedItemIds.current.has(p.userId)) return;
               if (p.id) updated[p.id] = p;
               const key = `${p.missionId}_${p.userId}_${p.periodKey || 'w1'}`;
               updated[key] = p;
@@ -775,14 +786,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const unsubUserBadges = subscribeToRealtimeCollection(COLLECTIONS.USER_BADGES, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => {
-            const badgeMap = new Map((prev.userBadges || []).map((b: any) => [b.id || `${b.userId}_${b.badgeId}`, b]));
-            items.forEach((b: any) => {
-              const id = b.id || `${b.userId}_${b.badgeId}`;
-              badgeMap.set(id, b);
-            });
-            return { ...prev, userBadges: Array.from(badgeMap.values()) };
-          });
+          const valid = (items || []).filter((b: any) => b && !deletedItemIds.current.has(b.userId));
+          setData((prev: any) => ({ ...prev, userBadges: valid }));
         });
         unsubList.push(unsubUserBadges);
 
@@ -796,8 +801,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubQuizSubmissions = subscribeToRealtimeCollection(COLLECTIONS.QUIZ_SUBMISSIONS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const updated = { ...prev.quizSubmissions };
-            items.forEach((sub: any) => {
+            const updated: Record<string, any> = {};
+            (items || []).forEach((sub: any) => {
+              if (deletedItemIds.current.has(sub.userId)) return;
               if (sub.id) updated[sub.id] = sub;
               if (sub.quizId && sub.userId) updated[`${sub.quizId}_${sub.userId}`] = sub;
             });
@@ -809,18 +815,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubChat = subscribeToRealtimeCollection(COLLECTIONS.CHAT_MESSAGES, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-                        if (!items) items = [];
-            const firestoreIds = new Set(items.map((m: any) => m.id));
+            const validItems = (items || []).filter((m: any) => m && m.id && !deletedItemIds.current.has(m.id));
+            const firestoreIds = new Set(validItems.map((m: any) => m.id));
             const now = Date.now();
             // Preserve pending optimistic messages sent by currentUser within last 15s
             const pendingLocal = (prev.chatMessages || []).filter((m: any) => {
-              if (firestoreIds.has(m.id)) return false;
+              if (firestoreIds.has(m.id) || deletedItemIds.current.has(m.id)) return false;
               const msgTime = new Date(m.createdAt || 0).getTime();
               return now - msgTime < 15000 && m.senderId === prev.currentUserId;
             });
 
             const combined = [
-              ...items.map((m: any) => ({
+              ...validItems.map((m: any) => ({
                 ...m,
                 reactions: m.reactions || {},
               })),
@@ -837,16 +843,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const unsubNotifications = subscribeToRealtimeCollection(COLLECTIONS.NOTIFICATIONS, (items) => {
           if (!isMounted) return;
-          setData((prev: any) => {
-            const notifMap = new Map((prev.notifications || []).map((n: any) => [n.id, n]));
-            items.forEach((n: any) => {
-              if (n.id) notifMap.set(n.id, n);
-            });
-            const sorted = Array.from(notifMap.values()).sort(
-              (a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-            );
-            return { ...prev, notifications: sorted };
-          });
+          const valid = (items || []).filter((n: any) => n && n.id && !deletedItemIds.current.has(n.id) && !deletedItemIds.current.has(n.userId));
+          const sorted = valid.sort(
+            (a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+          );
+          setData((prev: any) => ({ ...prev, notifications: sorted }));
         });
         unsubList.push(unsubNotifications);
 
@@ -979,7 +980,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const cloudData = await loadAllFromFirestore();
       if (cloudData) {
         setData((prev: any) => {
-          const merged = mergeLocalAndCloud(prev, cloudData);
+          const merged = mergeLocalAndCloud(prev, cloudData, deletedItemIds.current);
           return merged;
         });
         setIsFirebaseSynced(true);
@@ -1032,16 +1033,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Storage cache error:', e);
       }
     }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [data]);
-
-  // Otomatis real-time sinkronisasi ke Cloud Firestore & Server setiap data berubah
-  useEffect(() => {
-    if (!hasLoadedCloudRef.current) return;
-    const timer = setTimeout(() => {
-      syncAllStateToFirestore(data).catch(() => {});
-    }, 2000);
 
     return () => clearTimeout(timer);
   }, [data]);
@@ -2187,6 +2178,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteMaterial = (id: string) => {
     deletedItemIds.current.add(id);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const updatedMaterials = (prev.materials || []).filter((m: Material) => m.id !== id);
       const updatedProg = { ...(prev.materialProgress || {}) };
@@ -2289,6 +2281,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteAssignment = (id: string) => {
     deletedItemIds.current.add(id);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const updatedAssignments = (prev.assignments || []).filter((a: Assignment) => a.id !== id);
       const updatedSubs = { ...(prev.submissions || {}) };
@@ -2389,6 +2382,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteQuiz = (id: string) => {
     deletedItemIds.current.add(id);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const updatedQuizzes = (prev.quizzes || []).filter((q: Quiz) => q.id !== id);
       const updatedSubs = { ...(prev.quizSubmissions || {}) };
@@ -2781,6 +2775,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteMission = (id: string) => {
     deletedItemIds.current.add(id);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const updatedMissions = (prev.missions || []).filter((m: Mission) => m.id !== id);
       const updatedMisProg = { ...(prev.missionProgress || {}) };
@@ -3150,6 +3145,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteAnnouncement = (id: string) => {
+    deletedItemIds.current.add(id);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => ({
       ...prev,
       announcements: prev.announcements.filter((a: Announcement) => a.id !== id),
@@ -3169,6 +3166,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     avatarUrl?: string;
   }) => {
     const uid = `usr_std_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    deletedItemIds.current.delete(uid);
+    saveDeletedIds(deletedItemIds.current);
     const now = new Date().toISOString();
     const avatarIndex = Math.floor(Math.random() * 10);
     const seeds = ['Panda', 'Tiger', 'Falcon', 'Dolphin', 'Eagle', 'Koala', 'Fox', 'Lion'];
@@ -3257,6 +3256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     students.forEach((s, idx) => {
       const uid = `usr_std_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
+      deletedItemIds.current.delete(uid);
       const seed = seeds[(idx + Math.floor(Math.random() * 5)) % seeds.length];
 
       const cleanUsername = s.username?.trim().toLowerCase() ||
@@ -3303,6 +3303,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       syncDocToFirestore(COLLECTIONS.USERS, uid, u);
       syncDocToFirestore(COLLECTIONS.USER_STATS, uid, stats);
     });
+
+    saveDeletedIds(deletedItemIds.current);
 
     setData((prev: any) => ({
       ...prev,
@@ -3442,6 +3444,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteStudents = (userIds: string[]) => {
     userIds.forEach(id => deletedItemIds.current.add(id));
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const userIdsSet = new Set(userIds);
       const updatedUsers = (prev.users || []).filter((u: User) => !userIdsSet.has(u.uid));
@@ -3488,6 +3491,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const saveTeacher = async (teacher: User) => {
     deletedItemIds.current.delete(teacher.uid);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const existingIdx = (prev.users || []).findIndex((u: User) => u.uid === teacher.uid);
       let updatedUsers = [...(prev.users || [])];
@@ -3503,6 +3507,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteUser = async (userId: string) => {
     deletedItemIds.current.add(userId);
+    saveDeletedIds(deletedItemIds.current);
     setData((prev: any) => {
       const updatedUsers = (prev.users || []).filter((u: User) => u.uid !== userId);
       const updatedStats = { ...(prev.userStats || {}) };
@@ -3660,6 +3665,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteChatMessage = async (messageId: string): Promise<void> => {
     if (!currentUser || !messageId) return;
 
+    deletedItemIds.current.add(messageId);
+    saveDeletedIds(deletedItemIds.current);
+
     setData((prev: any) => {
       const filtered = (prev.chatMessages || []).filter((msg: ChatMessage) => msg.id !== messageId);
       return {
@@ -3673,6 +3681,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addClass = (newClass: Omit<ClassRoom, 'id' | 'createdAt'>) => {
     const classId = `cls_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    deletedItemIds.current.delete(classId);
+    saveDeletedIds(deletedItemIds.current);
+
     const created: ClassRoom = {
       ...newClass,
       id: classId,
@@ -3706,6 +3717,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteClass = async (classId: string) => {
+    deletedItemIds.current.add(classId);
+    saveDeletedIds(deletedItemIds.current);
+
     setData((prev: any) => {
       const updatedClasses = (prev.classes || []).filter((c: ClassRoom) => c.id !== classId);
       const updatedUsers = (prev.users || []).map((u: User) => {
