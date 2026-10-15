@@ -85,35 +85,34 @@ export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
     }, 200);
   };
 
+  // Registered teachers
+  const teachers = useMemo(() => {
+    return users
+      .filter((u) => u.role === 'teacher')
+      .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || '', 'id', { sensitivity: 'base' }));
+  }, [users]);
+
+  const [selectedTeacher, setSelectedTeacher] = useState<UserType | null>(null);
+
+  useEffect(() => {
+    if (teachers.length > 0) {
+      if (!selectedTeacher || !teachers.some((t) => t.uid === selectedTeacher.uid)) {
+        setSelectedTeacher(teachers[0]);
+      }
+    } else {
+      setSelectedTeacher(null);
+    }
+  }, [teachers, selectedTeacher]);
+
   // Handle teacher login submit
-  const handleTeacherSubmit = (identifier: string, pass: string) => {
+  const handleTeacherSubmit = (teacher: UserType, pass: string) => {
     setErrorMessage(null);
     setIsLoading(true);
 
     setTimeout(() => {
       setIsLoading(false);
-      const cleanId = identifier.trim().toLowerCase();
       const cleanPass = pass.trim();
-
-      if (cleanId === 'admin' && cleanPass === 'admin') {
-        try {
-          confetti({ particleCount: 60, spread: 60, origin: { y: 0.6 } });
-        } catch (e) {}
-        onLoginSuccess('admin', 'admin');
-        return;
-      }
-
-      const teacherUsers = users.filter((u) => u.role === 'teacher' || u.role === 'admin');
-      const matchedTeacher = teacherUsers.find((t) => {
-        if (t.email && t.email.toLowerCase() === cleanId) return true;
-        if (t.username && t.username.toLowerCase() === cleanId) return true;
-        if (t.uid && t.uid.toLowerCase() === cleanId) return true;
-        if (t.displayName && t.displayName.toLowerCase().includes(cleanId)) return true;
-        return false;
-      });
-
-      const activeTeacher = matchedTeacher || teacherUsers[0];
-      const expectedPass = activeTeacher?.password || 'guru123';
+      const expectedPass = teacher?.password || 'guru123';
 
       if (cleanPass === expectedPass || cleanPass === 'guru123' || cleanPass === '123456') {
         try {
@@ -124,7 +123,11 @@ export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
           });
         } catch (e) {}
 
-        onLoginSuccess(activeTeacher ? activeTeacher.uid : 'usr_guru_rahma', 'teacher');
+        if (teacher.classIds?.[0]) {
+          setCurrentClassId(teacher.classIds[0]);
+        }
+
+        onLoginSuccess(teacher.uid, 'teacher');
       } else {
         setErrorMessage('Kata sandi guru belum tepat. Silakan coba lagi.');
       }
@@ -263,6 +266,13 @@ export const LoginCard: React.FC<LoginCardProps> = ({ onLoginSuccess }) => {
           />
         ) : activeTab === 'teacher' ? (
           <TeacherLogin
+            teachers={teachers}
+            selectedTeacher={selectedTeacher}
+            onSelectTeacher={(t) => {
+              setSelectedTeacher(t);
+              setErrorMessage(null);
+            }}
+            classes={classes}
             onSubmit={handleTeacherSubmit}
             isLoading={isLoading}
           />
