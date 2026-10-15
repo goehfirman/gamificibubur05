@@ -173,6 +173,7 @@ interface AppContextType {
   updateStudentPhoto: (userId: string, photoUrl: string) => void;
   deleteStudent: (userId: string) => void;
   deleteStudents: (userIds: string[]) => void;
+  saveTeacher: (teacher: User) => Promise<void>;
   deleteTeacher: (userId: string) => Promise<void>;
   deleteUser: (userId: string) => Promise<void>;
   setStudentPassword: (userId: string, newPassword: string) => void;
@@ -3475,6 +3476,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     bulkDeleteFromFirestore(deletes);
   };
 
+  const saveTeacher = async (teacher: User) => {
+    deletedItemIds.current.delete(teacher.uid);
+    setData((prev: any) => {
+      const existingIdx = (prev.users || []).findIndex((u: User) => u.uid === teacher.uid);
+      let updatedUsers = [...(prev.users || [])];
+      if (existingIdx >= 0) {
+        updatedUsers[existingIdx] = { ...updatedUsers[existingIdx], ...teacher };
+      } else {
+        updatedUsers.push(teacher);
+      }
+      return { ...prev, users: updatedUsers };
+    });
+    await syncDocToFirestore(COLLECTIONS.USERS, teacher.uid, teacher);
+  };
+
   const deleteUser = async (userId: string) => {
     deletedItemIds.current.add(userId);
     setData((prev: any) => {
@@ -3495,8 +3511,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     });
 
-    deleteDocFromFirestore(COLLECTIONS.USERS, userId);
-    deleteDocFromFirestore(COLLECTIONS.USER_STATS, userId);
+    await Promise.allSettled([
+      deleteDocFromFirestore(COLLECTIONS.USERS, userId),
+      deleteDocFromFirestore(COLLECTIONS.USER_STATS, userId),
+    ]);
   };
 
   const deleteTeacher = async (userId: string) => {
@@ -3775,6 +3793,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateStudentPhoto,
         deleteStudent,
         deleteStudents,
+        saveTeacher,
         deleteTeacher,
         deleteUser,
         setStudentPassword,

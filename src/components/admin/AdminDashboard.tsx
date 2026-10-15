@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { User, ClassRoom } from '../../types';
 import {
@@ -19,14 +19,60 @@ import {
   BookOpen,
   Calendar,
   Layers,
+  RefreshCw,
+  AlertTriangle,
+  Copy,
+  ExternalLink,
 } from 'lucide-react';
 import { syncDocToFirestore, COLLECTIONS } from '../../lib/firestoreSync';
 
 export const AdminDashboard: React.FC = () => {
-  const { users, classes, school, addClass, updateClass, deleteClass, deleteTeacher, deleteStudent } = useApp();
+  const {
+    users,
+    classes,
+    school,
+    addClass,
+    updateClass,
+    deleteClass,
+    saveTeacher,
+    deleteTeacher,
+    deleteStudent,
+    syncAllToCloud,
+    isFirebaseSynced,
+  } = useApp();
 
   // Active navigation tab inside Admin Dashboard
   const [activeTab, setActiveTab] = useState<'teachers' | 'classes' | 'students'>('teachers');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [hasPermissionDenied, setHasPermissionDenied] = useState(false);
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [copiedRules, setCopiedRules] = useState(false);
+
+  useEffect(() => {
+    const handlePerm = () => setHasPermissionDenied(true);
+    window.addEventListener('firestore-permission-denied', handlePerm);
+    return () => window.removeEventListener('firestore-permission-denied', handlePerm);
+  }, []);
+
+  const handleSyncAllToFirebase = async () => {
+    setIsSyncing(true);
+    setSyncFeedback('Sedang menyinkronkan data ke Cloud Firestore...');
+    try {
+      const success = await syncAllToCloud();
+      if (success) {
+        setSyncFeedback('✅ Seluruh data berhasil disinkronkan ke Cloud Firestore!');
+        setHasPermissionDenied(false);
+      } else {
+        setSyncFeedback('⚠️ Sinkronisasi lokal/offline berhasil. Pastikan Aturan (Rules) di Firebase Console telah dipublikasikan.');
+      }
+    } catch (e: any) {
+      setSyncFeedback('❌ Gagal sinkronisasi: ' + (e?.message || 'Error'));
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncFeedback(null), 8000);
+    }
+  };
 
   // Search states
   const [teacherSearch, setTeacherSearch] = useState('');
@@ -164,7 +210,7 @@ export const AdminDashboard: React.FC = () => {
       };
     }
 
-    await syncDocToFirestore(COLLECTIONS.USERS, userToSave.uid, userToSave);
+    await saveTeacher(userToSave);
     setIsTeacherModalOpen(false);
   };
 
@@ -293,6 +339,15 @@ export const AdminDashboard: React.FC = () => {
 
           <div className="flex flex-wrap items-center gap-3">
             <button
+              onClick={handleSyncAllToFirebase}
+              disabled={isSyncing}
+              title="Sinkronkan seluruh data lokal ke Firebase Cloud Firestore"
+              className="px-4 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs sm:text-sm transition-all shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Menyinkronkan...' : 'Sinkron ke Firebase'}</span>
+            </button>
+            <button
               onClick={handleOpenAddTeacher}
               className="px-4 py-2.5 rounded-2xl bg-white text-emerald-950 font-bold text-xs sm:text-sm hover:bg-emerald-50 transition-all shadow-md flex items-center gap-2 cursor-pointer"
             >
@@ -339,6 +394,121 @@ export const AdminDashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Sync Feedback Message */}
+      {syncFeedback && (
+        <div className={`p-4 rounded-2xl text-xs sm:text-sm font-semibold flex items-center gap-3 border shadow-xs animate-fade-in ${
+          syncFeedback.startsWith('✅')
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : syncFeedback.startsWith('⚠️')
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-indigo-50 border-indigo-200 text-indigo-800'
+        }`}>
+          <RefreshCw className={`w-4 h-4 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+          <span className="flex-1">{syncFeedback}</span>
+        </div>
+      )}
+
+      {/* Permission Denied Banner */}
+      {hasPermissionDenied && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-900">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-sm text-amber-900">Pemberitahuan Izin Firebase (permission-denied)</p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Cloud Firestore memerlukan aturan akses (Rules) agar Web App diizinkan menyimpan & menghapus data langsung.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowRulesModal(true)}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer shrink-0"
+          >
+            Lihat Aturan Firebase
+          </button>
+        </div>
+      )}
+
+      {/* Firebase Rules Modal */}
+      {showRulesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-indigo-900 font-bold">
+                <ShieldCheck className="w-5 h-5 text-indigo-600" />
+                <span>Aturan (Rules) Firebase Cloud Firestore</span>
+              </div>
+              <button
+                onClick={() => setShowRulesModal(false)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Secara default, Firebase mengunci database agar tidak dapat ditulis. Salin aturan berikut lalu terapkan di Firebase Console:
+            </p>
+
+            <div className="bg-slate-900 text-emerald-400 rounded-2xl p-4 font-mono text-xs overflow-x-auto relative">
+              <pre>{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}`}</pre>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}`);
+                  setCopiedRules(true);
+                  setTimeout(() => setCopiedRules(false), 2000);
+                }}
+                className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all"
+              >
+                {copiedRules ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedRules ? 'Tersalin' : 'Salin'}</span>
+              </button>
+            </div>
+
+            <div className="space-y-1 text-xs text-slate-600">
+              <p className="font-bold text-slate-800">Langkah Penerapan:</p>
+              <ol className="list-decimal list-inside space-y-1 text-[11px]">
+                <li>Buka Firebase Console project <strong>gamificlasscibubur05</strong>.</li>
+                <li>Pilih <strong>Firestore Database</strong> lalu klik tab <strong>Rules (Aturan)</strong>.</li>
+                <li>Tempel aturan di atas, lalu klik tombol <strong>Publish (Publikasikan)</strong>.</li>
+              </ol>
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              <a
+                href="https://console.firebase.google.com/project/gamificlasscibubur05/firestore/rules"
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                <span>Buka Firebase Console</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <button
+                onClick={() => setShowRulesModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Tab Controls: [Kelola Guru] | [Kelola Kelas] */}
       <div className="flex border-b border-slate-200 bg-white rounded-2xl p-1.5 shadow-xs">

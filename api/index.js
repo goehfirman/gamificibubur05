@@ -275,25 +275,10 @@ app.put('/api/db', async (req, res) => {
     Object.keys(req.body).forEach(k => {
       const incomingVal = req.body[k];
       const existingVal = db[k];
-      if (k === 'users' && Array.isArray(incomingVal) && Array.isArray(existingVal)) {
-        const incomingMap = new Map(incomingVal.map(u => [u.uid, u]));
-        db.users = existingVal.map(existing => {
-          const incoming = incomingMap.get(existing.uid);
-          return incoming ? { ...existing, ...incoming } : existing;
-        });
-        const existingUids = new Set(existingVal.map(u => u.uid));
-        incomingVal.forEach(u => {
-          if (!existingUids.has(u.uid)) db.users.push(u);
-        });
-      } else if (ARRAY_COLLECTIONS.has(k) && Array.isArray(incomingVal) && Array.isArray(existingVal)) {
-        const existingMap = new Map(existingVal.map(item => [item?.id, item]));
-        incomingVal.forEach(item => {
-          if (item && item.id) {
-            const ex = existingMap.get(item.id);
-            existingMap.set(item.id, ex ? { ...ex, ...item } : item);
-          }
-        });
-        db[k] = Array.from(existingMap.values());
+      if (k === 'users' && Array.isArray(incomingVal)) {
+        db.users = incomingVal;
+      } else if (ARRAY_COLLECTIONS.has(k) && Array.isArray(incomingVal)) {
+        db[k] = incomingVal;
       } else if (typeof incomingVal === 'object' && incomingVal !== null && !Array.isArray(incomingVal)) {
         db[k] = { ...(existingVal || {}), ...incomingVal };
       } else {
@@ -351,11 +336,24 @@ app.post('/api/bulk-delete', async (req, res) => {
   
   const finalDb = await modifyDb((db) => {
     for (const { collection, id } of deletes) {
+      const idStr = String(id);
       if (db[collection]) {
         if (Array.isArray(db[collection])) {
-          db[collection] = db[collection].filter(item => item && item.id !== id && item.uid !== id);
+          db[collection] = db[collection].filter(item => item && String(item.id || item.uid) !== idStr);
         } else {
-          delete db[collection][id];
+          delete db[collection][idStr];
+        }
+      }
+      if (collection === 'users') {
+        if (Array.isArray(db.classes)) {
+          db.classes.forEach(c => {
+            if (Array.isArray(c.teacherIds)) {
+              c.teacherIds = c.teacherIds.filter(tId => String(tId) !== idStr);
+            }
+          });
+        }
+        if (db.userStats && db.userStats[idStr]) {
+          delete db.userStats[idStr];
         }
       }
     }
@@ -366,6 +364,7 @@ app.post('/api/bulk-delete', async (req, res) => {
 
 app.delete('/api/collections/:collection/:id', async (req, res) => {
   const { collection, id } = req.params;
+  const idStr = String(id);
 
   if (isFirebaseEnabled()) {
     const revision = await deleteFirestoreDoc(collection, id);
@@ -375,9 +374,21 @@ app.delete('/api/collections/:collection/:id', async (req, res) => {
   const finalDb = await modifyDb((db) => {
     if (db[collection]) {
       if (Array.isArray(db[collection])) {
-        db[collection] = db[collection].filter(item => item && item.id !== id && item.uid !== id);
+        db[collection] = db[collection].filter(item => item && String(item.id || item.uid) !== idStr);
       } else {
-        delete db[collection][id];
+        delete db[collection][idStr];
+      }
+    }
+    if (collection === 'users') {
+      if (Array.isArray(db.classes)) {
+        db.classes.forEach(c => {
+          if (Array.isArray(c.teacherIds)) {
+            c.teacherIds = c.teacherIds.filter(tId => String(tId) !== idStr);
+          }
+        });
+      }
+      if (db.userStats && db.userStats[idStr]) {
+        delete db.userStats[idStr];
       }
     }
     return db;

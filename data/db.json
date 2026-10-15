@@ -93,24 +93,6 @@
   ],
   "users": [
     {
-      "uid": "usr_guru_rahma",
-      "role": "teacher",
-      "status": "active",
-      "displayName": "Teguh Firmansyah Apriliana, M.Pd",
-      "searchName": "teguh firmansyah apriliana guru wali kelas 6e",
-      "username": "guru.teguh",
-      "password": "guru123",
-      "avatarUrl": "/uploads/avatars/guru.teguh_avatar_1788755114315_0ovu.jpg",
-      "schoolId": "sch_merdeka_01",
-      "classIds": [
-        "cls_6a",
-        "cls_6b"
-      ],
-      "email": "teguh.april92@gmail.com",
-      "createdAt": "2026-07-01T08:00:00.000Z",
-      "updatedAt": "2026-09-07T05:17:16.755Z"
-    },
-    {
       "uid": "usr_std_1788692119731_1_8iu0",
       "role": "student",
       "status": "active",
@@ -27436,17 +27418,6 @@
       "lastSeenIso": "2026-09-25T07:32:20.287Z",
       "activity": "Aktif di Aplikasi"
     },
-    "usr_guru_rahma": {
-      "userId": "usr_guru_rahma",
-      "displayName": "Teguh Firmansyah Apriliana, M.Pd",
-      "role": "teacher",
-      "avatarUrl": "/uploads/avatars/guru.teguh_avatar_1788755114315_0ovu.jpg",
-      "classId": "cls_6a",
-      "isOnline": true,
-      "lastSeen": 1790420214336,
-      "lastSeenIso": "2026-09-26T10:56:54.336Z",
-      "activity": "Aktif di Aplikasi"
-    },
     "admin": {
       "userId": "admin",
       "displayName": "Administrator",
@@ -34867,5 +34838,5 @@
       "updatedAt": "2026-09-26T09:49:44.527Z"
     }
   ],
-  "_revision": 1792033570661
+  "_revision": 1792034344120
 }

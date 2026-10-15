@@ -1,4 +1,13 @@
 import localforage from 'localforage';
+import { db } from './firebase';
+import {
+  collection,
+  doc,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  writeBatch,
+} from 'firebase/firestore';
 
 export const COLLECTIONS = {
   USERS: 'users',
@@ -28,11 +37,48 @@ const collectionCache = new Map<string, any[]>();
 const collectionListeners = new Map<string, Set<(data: any[]) => void>>();
 let lastServerRevision = 0;
 let pollingInterval: any = null;
+let isPermissionDenied = false;
 
 // IndexedDB initialization for offline mode
 const store = localforage.createInstance({
   name: 'GamiClassDB'
 });
+
+export function isFirestorePermissionDenied(): boolean {
+  return isPermissionDenied;
+}
+
+function handleFirestoreError(operation: string, collName: string, id: any, err: any) {
+  if (err?.code === 'permission-denied') {
+    isPermissionDenied = true;
+    console.warn(`[Firestore ${operation}] ⚠️ Izin Ditolak (permission-denied) pada ${collName}/${id}. Periksa Firestore Rules di Firebase Console!`);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('firestore-permission-denied', {
+        detail: { collection: collName, error: err.message }
+      }));
+    }
+  } else {
+    console.warn(`[Firestore ${operation}] Warning (${collName}/${id}):`, err?.message || err);
+  }
+}
+
+export function cleanForFirestore(obj: any): any {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj.toISOString();
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => cleanForFirestore(item));
+  }
+  const clean: Record<string, any> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val !== undefined) {
+      clean[key] = cleanForFirestore(val);
+    }
+  }
+  return clean;
+}
 
 function notifyListeners(collection: string) {
   const items = collectionCache.get(collection) || [];
@@ -119,14 +165,29 @@ async function fetchDeltaSync() {
 if (typeof window !== 'undefined') {
   initOfflineCache().then(() => {
     fetchDeltaSync();
-    pollingInterval = setInterval(fetchDeltaSync, 1000); // Smart polling every 1s
+    pollingInterval = setInterval(fetchDeltaSync, 1500);
   });
 }
 
-export async function syncDocToFirestore(collection: string, docId: string, data: any) {
-  updateDocInCache(collection, docId, data);
+/**
+ * Menyimpan / memperbarui dokumen secara real-time ke Cloud Firestore Web SDK & Backend API
+ */
+export async function syncDocToFirestore(collectionName: string, docId: string, data: any) {
+  const idStr = String(docId);
+  updateDocInCache(collectionName, idStr, data);
+
+  // 1. Direct write ke Cloud Firestore
   try {
-    await fetch(`/api/collections/${collection}/${encodeURIComponent(docId)}`, {
+    const docRef = doc(db, collectionName, idStr);
+    await setDoc(docRef, cleanForFirestore(data), { merge: true });
+    isPermissionDenied = false;
+  } catch (err: any) {
+    handleFirestoreError('syncDoc', collectionName, idStr, err);
+  }
+
+  // 2. Dual-sync ke Serverless API / Local API
+  try {
+    await fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -136,8 +197,33 @@ export async function syncDocToFirestore(collection: string, docId: string, data
   }
 }
 
+/**
+ * Menghapus banyak dokumen sekaligus secara real-time dari Cloud Firestore & Backend API
+ */
 export async function bulkDeleteFromFirestore(deletes: { collection: string, id: string }[]) {
-  deletes.forEach(d => removeDocFromCache(d.collection, d.id));
+  if (!Array.isArray(deletes) || deletes.length === 0) return;
+  deletes.forEach(d => removeDocFromCache(d.collection, String(d.id)));
+
+  // 1. Direct batch delete ke Cloud Firestore
+  try {
+    const batch = writeBatch(db);
+    let count = 0;
+    for (const d of deletes) {
+      if (d.collection && d.id) {
+        batch.delete(doc(db, d.collection, String(d.id)));
+        count++;
+      }
+    }
+    if (count > 0) {
+      await batch.commit();
+      isPermissionDenied = false;
+      console.log(`[Firestore] Bulk delete ${count} dokumen berhasil di Cloud Firestore.`);
+    }
+  } catch (err: any) {
+    handleFirestoreError('bulkDelete', 'multiple', deletes.length, err);
+  }
+
+  // 2. Dual-sync ke Serverless API / Local API
   try {
     await fetch('/api/bulk-delete', {
       method: 'POST',
@@ -147,24 +233,69 @@ export async function bulkDeleteFromFirestore(deletes: { collection: string, id:
   } catch (err) {}
 }
 
-export async function deleteDocFromFirestore(collection: string, docId: string) {
-  removeDocFromCache(collection, docId);
+/**
+ * Menghapus satu dokumen secara permanen dari Cloud Firestore & Backend API
+ */
+export async function deleteDocFromFirestore(collectionName: string, docId: string) {
+  const idStr = String(docId);
+  removeDocFromCache(collectionName, idStr);
+
+  // 1. Direct delete ke Cloud Firestore
   try {
-    await fetch(`/api/collections/${collection}/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+    const docRef = doc(db, collectionName, idStr);
+    await deleteDoc(docRef);
+    isPermissionDenied = false;
+    console.log(`[Firestore] Dokumen ${collectionName}/${idStr} berhasil dihapus dari Cloud Firestore.`);
+  } catch (err: any) {
+    handleFirestoreError('deleteDoc', collectionName, idStr, err);
+  }
+
+  // 2. Dual-sync ke Serverless API / Local API
+  try {
+    await fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, { method: 'DELETE' });
   } catch (err) {}
 }
 
+/**
+ * Memuat seluruh database: memprioritaskan API Backend, lalu Firestore Web SDK, lalu IndexedDB
+ */
 export async function loadAllFromFirestore() {
-  const db = await store.getItem<Record<string, any>>('offline_db_cache') || {};
+  const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache') || {};
+
+  // 1. Coba ambil dari server API /api/db
   try {
     const res = await fetch('/api/db', { cache: 'no-store' });
     if (res.ok) {
       const serverDb = await res.json();
-      populateFullCache(serverDb);
-      return serverDb;
+      if (serverDb && (serverDb.users?.length > 0 || Object.keys(serverDb).length > 2)) {
+        populateFullCache(serverDb);
+        return serverDb;
+      }
     }
   } catch (err) {}
-  return db;
+
+  // 2. Fallback: Coba ambil langsung dari Cloud Firestore Web SDK
+  try {
+    const loadedData: Record<string, any> = {};
+    let hasData = false;
+
+    for (const collName of Object.values(COLLECTIONS)) {
+      try {
+        const snap = await getDocs(collection(db, collName));
+        if (!snap.empty) {
+          hasData = true;
+          loadedData[collName] = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        }
+      } catch (e) {}
+    }
+
+    if (hasData) {
+      populateFullCache(loadedData);
+      return loadedData;
+    }
+  } catch (err) {}
+
+  return offlineDb;
 }
 
 export function subscribeToRealtimeCollection(collection: string, callback: (data: any[]) => void) {
@@ -183,7 +314,64 @@ export function subscribeToRealtimeCollection(collection: string, callback: (dat
   };
 }
 
-export async function syncAllStateToFirestore(data: any) {
+/**
+ * Menyinkronkan seluruh database lokal ke Cloud Firestore & Backend API
+ */
+export async function syncAllStateToFirestore(data: any): Promise<boolean> {
+  if (!data || typeof data !== 'object') return false;
+
+  let directFirestoreOk = false;
+
+  // 1. Direct upload ke Cloud Firestore dalam batch
+  try {
+    for (const collName of Object.values(COLLECTIONS)) {
+      const items = data[collName];
+      if (Array.isArray(items) && items.length > 0) {
+        let batch = writeBatch(db);
+        let opCount = 0;
+        for (const item of items) {
+          if (!item) continue;
+          const id = String(item.id || item.uid || `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`);
+          batch.set(doc(db, collName, id), cleanForFirestore(item), { merge: true });
+          opCount++;
+          if (opCount >= 400) {
+            await batch.commit();
+            batch = writeBatch(db);
+            opCount = 0;
+          }
+        }
+        if (opCount > 0) {
+          await batch.commit();
+        }
+      } else if (items && typeof items === 'object' && !Array.isArray(items)) {
+        const entries = Object.entries(items);
+        if (entries.length > 0) {
+          let batch = writeBatch(db);
+          let opCount = 0;
+          for (const [key, val] of entries) {
+            if (!val) continue;
+            batch.set(doc(db, collName, key), cleanForFirestore(val), { merge: true });
+            opCount++;
+            if (opCount >= 400) {
+              await batch.commit();
+              batch = writeBatch(db);
+              opCount = 0;
+            }
+          }
+          if (opCount > 0) {
+            await batch.commit();
+          }
+        }
+      }
+    }
+    directFirestoreOk = true;
+    isPermissionDenied = false;
+    console.log('✅ Berhasil menyinkronkan seluruh database ke Cloud Firestore!');
+  } catch (err: any) {
+    handleFirestoreError('syncAllState', 'all', 'batch', err);
+  }
+
+  // 2. Dual-sync ke Serverless API / Local API
   try {
     const res = await fetch('/api/db', {
       method: 'PUT',
@@ -195,8 +383,9 @@ export async function syncAllStateToFirestore(data: any) {
       return true;
     }
   } catch (err) {}
+
   populateFullCache(data);
-  return false;
+  return directFirestoreOk;
 }
 
 export async function updateUserPresence(data: any) {
@@ -210,7 +399,6 @@ export async function setUserOffline(userId: string) {
 export function isFirestoreQuotaExceeded() { return false; }
 export function setFirestoreQuotaExceeded(val: boolean) {}
 export function isQuotaError(err: any) { return false; }
-export function cleanForFirestore(obj: any) { return obj; }
 
 export async function submitPaperAnswersBatch(sessionId: string, questionIndex: number, answers: any[]) {
   try {
@@ -251,9 +439,17 @@ export async function controlPaperSession(sessionId: string, updates: any) {
   }
 }
 
-export async function seedFirestoreIfEmpty() { return true; }
-
-
-
-
-
+export async function seedFirestoreIfEmpty() {
+  try {
+    const usersSnap = await getDocs(collection(db, COLLECTIONS.USERS));
+    if (usersSnap.empty) {
+      const offlineDb = await store.getItem<Record<string, any>>('offline_db_cache');
+      if (offlineDb && Object.keys(offlineDb).length > 2) {
+        await syncAllStateToFirestore(offlineDb);
+      }
+    }
+  } catch (err: any) {
+    // Silent fail if permission-denied or offline
+  }
+  return true;
+}

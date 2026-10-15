@@ -459,9 +459,55 @@ export async function deleteFirestoreDoc(collection, docId) {
     await db.collection(collection).doc(idStr).delete();
   }
 
+  // Jika menghapus user, bersihkan juga teacherIds di classes & singletons.userStats
+  if (collection === 'users') {
+    try {
+      const classesSnap = await db.collection('classes').get();
+      const batch = db.batch();
+      let hasUpdate = false;
+      classesSnap.docs.forEach(docSnap => {
+        const c = docSnap.data();
+        if (Array.isArray(c?.teacherIds) && c.teacherIds.includes(idStr)) {
+          batch.update(docSnap.ref, {
+            teacherIds: c.teacherIds.filter(t => t !== idStr)
+          });
+          hasUpdate = true;
+        }
+      });
+      if (hasUpdate) await batch.commit();
+
+      const snap = await db.collection('_system').doc('singletons').get();
+      if (snap.exists) {
+        const data = snap.data();
+        if (data.userStats && data.userStats[idStr]) {
+          delete data.userStats[idStr];
+          await db.collection('_system').doc('singletons').set(data);
+        }
+      }
+    } catch (e) {
+      console.warn('Gagal membersihkan dependensi user di Firestore:', e.message);
+    }
+  }
+
   const newRev = await bumpFirestoreRevision();
-  if (cachedDb && Array.isArray(cachedDb[collection])) {
-    cachedDb[collection] = cachedDb[collection].filter(i => String(i?.id || i?.uid) !== idStr);
+  if (cachedDb) {
+    if (Array.isArray(cachedDb[collection])) {
+      cachedDb[collection] = cachedDb[collection].filter(i => String(i?.id || i?.uid) !== idStr);
+    } else if (cachedDb[collection] && typeof cachedDb[collection] === 'object') {
+      delete cachedDb[collection][idStr];
+    }
+    if (collection === 'users') {
+      if (Array.isArray(cachedDb.classes)) {
+        cachedDb.classes.forEach(c => {
+          if (Array.isArray(c.teacherIds)) {
+            c.teacherIds = c.teacherIds.filter(t => t !== idStr);
+          }
+        });
+      }
+      if (cachedDb.userStats && cachedDb.userStats[idStr]) {
+        delete cachedDb.userStats[idStr];
+      }
+    }
     cachedDb._revision = newRev;
   }
   return newRev;
@@ -492,8 +538,23 @@ export async function bulkDeleteFirestoreDocs(deletes) {
   const newRev = await bumpFirestoreRevision();
   if (cachedDb) {
     for (const { collection, id } of deletes) {
+      const idStr = String(id);
       if (Array.isArray(cachedDb[collection])) {
-        cachedDb[collection] = cachedDb[collection].filter(i => String(i?.id || i?.uid) !== String(id));
+        cachedDb[collection] = cachedDb[collection].filter(i => String(i?.id || i?.uid) !== idStr);
+      } else if (cachedDb[collection] && typeof cachedDb[collection] === 'object') {
+        delete cachedDb[collection][idStr];
+      }
+      if (collection === 'users') {
+        if (Array.isArray(cachedDb.classes)) {
+          cachedDb.classes.forEach(c => {
+            if (Array.isArray(c.teacherIds)) {
+              c.teacherIds = c.teacherIds.filter(t => t !== idStr);
+            }
+          });
+        }
+        if (cachedDb.userStats && cachedDb.userStats[idStr]) {
+          delete cachedDb.userStats[idStr];
+        }
       }
     }
     cachedDb._revision = newRev;
