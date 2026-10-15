@@ -173,6 +173,8 @@ interface AppContextType {
   updateStudentPhoto: (userId: string, photoUrl: string) => void;
   deleteStudent: (userId: string) => void;
   deleteStudents: (userIds: string[]) => void;
+  deleteTeacher: (userId: string) => Promise<void>;
+  deleteUser: (userId: string) => Promise<void>;
   setStudentPassword: (userId: string, newPassword: string) => void;
   resetStudentPassword: (userId: string) => string;
   
@@ -659,15 +661,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubUsers = subscribeToRealtimeCollection(COLLECTIONS.USERS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const firestoreUids = new Set(items.map((u: any) => u.uid));
+            const validItems = (items || []).filter((u: any) => u?.uid && !deletedItemIds.current.has(u.uid));
+            const firestoreUids = new Set(validItems.map((u: any) => u.uid));
             const now = Date.now();
             // Preserve locally provisioned users from the last 15s not yet in Firestore
             const pendingLocal = (prev.users || []).filter((u: any) => {
-              if (firestoreUids.has(u.uid)) return false;
+              if (!u?.uid || deletedItemIds.current.has(u.uid) || firestoreUids.has(u.uid)) return false;
               const created = new Date(u.createdAt || 0).getTime();
               return now - created < 15000;
             });
-            const merged = items.map((cloudUser: any) => {
+            const merged = validItems.map((cloudUser: any) => {
               const local = (prev.users || []).find((u: any) => u.uid === cloudUser.uid);
               if (local) {
                 const cloudTime = new Date(cloudUser.updatedAt || cloudUser.createdAt || 0).getTime();
@@ -3422,11 +3425,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-    const deleteStudent = (userId: string) => {
+  const deleteStudent = (userId: string) => {
     deleteStudents([userId]);
   };
 
   const deleteStudents = (userIds: string[]) => {
+    userIds.forEach(id => deletedItemIds.current.add(id));
     setData((prev: any) => {
       const userIdsSet = new Set(userIds);
       const updatedUsers = (prev.users || []).filter((u: User) => !userIdsSet.has(u.uid));
@@ -3463,12 +3467,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     });
 
-        const deletes: { collection: string, id: string }[] = [];
+    const deletes: { collection: string, id: string }[] = [];
     userIds.forEach(userId => {
       deletes.push({ collection: COLLECTIONS.USERS, id: userId });
       deletes.push({ collection: COLLECTIONS.USER_STATS, id: userId });
     });
     bulkDeleteFromFirestore(deletes);
+  };
+
+  const deleteUser = async (userId: string) => {
+    deletedItemIds.current.add(userId);
+    setData((prev: any) => {
+      const updatedUsers = (prev.users || []).filter((u: User) => u.uid !== userId);
+      const updatedStats = { ...(prev.userStats || {}) };
+      delete updatedStats[userId];
+
+      const updatedClasses = (prev.classes || []).map((c: ClassRoom) => ({
+        ...c,
+        teacherIds: (c.teacherIds || []).filter((tId: string) => tId !== userId),
+      }));
+
+      return {
+        ...prev,
+        users: updatedUsers,
+        userStats: updatedStats,
+        classes: updatedClasses,
+      };
+    });
+
+    deleteDocFromFirestore(COLLECTIONS.USERS, userId);
+    deleteDocFromFirestore(COLLECTIONS.USER_STATS, userId);
+  };
+
+  const deleteTeacher = async (userId: string) => {
+    await deleteUser(userId);
   };
 
   const resetStudentPassword = (userId: string): string => {
@@ -3743,6 +3775,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateStudentPhoto,
         deleteStudent,
         deleteStudents,
+        deleteTeacher,
+        deleteUser,
         setStudentPassword,
         resetStudentPassword,
         markNotificationRead,

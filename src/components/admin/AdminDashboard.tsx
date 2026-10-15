@@ -23,15 +23,17 @@ import {
 import { syncDocToFirestore, COLLECTIONS } from '../../lib/firestoreSync';
 
 export const AdminDashboard: React.FC = () => {
-  const { users, classes, school, addClass, updateClass, deleteClass } = useApp();
+  const { users, classes, school, addClass, updateClass, deleteClass, deleteTeacher, deleteStudent } = useApp();
 
   // Active navigation tab inside Admin Dashboard
-  const [activeTab, setActiveTab] = useState<'teachers' | 'classes'>('teachers');
+  const [activeTab, setActiveTab] = useState<'teachers' | 'classes' | 'students'>('teachers');
 
   // Search states
   const [teacherSearch, setTeacherSearch] = useState('');
   const [classSearch, setClassSearch] = useState('');
   const [classFilter, setClassFilter] = useState<string>('all');
+  const [studentSearch, setStudentSearch] = useState('');
+  const [studentClassFilter, setStudentClassFilter] = useState<string>('all');
 
   // Teacher Modal states
   const [isTeacherModalOpen, setIsTeacherModalOpen] = useState(false);
@@ -73,6 +75,24 @@ export const AdminDashboard: React.FC = () => {
     c.name.toLowerCase().includes(classSearch.toLowerCase()) ||
     c.academicYear.toLowerCase().includes(classSearch.toLowerCase())
   );
+
+  const filteredStudents = students.filter((s) => {
+    const matchSearch =
+      s.displayName.toLowerCase().includes(studentSearch.toLowerCase()) ||
+      (s.username || '').toLowerCase().includes(studentSearch.toLowerCase()) ||
+      (s.studentNumber || '').includes(studentSearch);
+    const matchClass =
+      studentClassFilter === 'all' || (s.classIds || []).includes(studentClassFilter);
+    return matchSearch && matchClass;
+  });
+
+  const handleDeleteStudent = async (uid: string) => {
+    const target = students.find((s) => s.uid === uid);
+    if (!target) return;
+    if (window.confirm(`Yakin ingin menghapus siswa "${target.displayName}" secara permanen? Data nilai, tugas, dan poin siswa akan ikut terhapus.`)) {
+      deleteStudent(uid);
+    }
+  };
 
   // --- TEACHER ACTIONS ---
   const handleOpenAddTeacher = () => {
@@ -149,11 +169,10 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteTeacher = async (uid: string) => {
-    if (window.confirm('Yakin ingin menonaktifkan akun guru ini?')) {
-      const target = users.find((u) => u.uid === uid);
-      if (target) {
-        await syncDocToFirestore(COLLECTIONS.USERS, uid, { ...target, status: 'inactive' });
-      }
+    const target = users.find((u) => u.uid === uid);
+    if (!target) return;
+    if (window.confirm(`Yakin ingin menghapus guru "${target.displayName}" secara permanen? Data akun guru dan kelas yang diampu akan disesuaikan.`)) {
+      await deleteTeacher(uid);
     }
   };
 
@@ -346,6 +365,18 @@ export const AdminDashboard: React.FC = () => {
           <School className="w-4 h-4" />
           <span>Kelola Rombel & Kelas ({classes.length})</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('students')}
+          className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+            activeTab === 'students'
+              ? 'bg-emerald-600 text-white shadow-sm'
+              : 'text-slate-600 hover:text-emerald-700 hover:bg-slate-50'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Kelola Data Siswa ({students.length})</span>
+        </button>
       </div>
 
       {/* ================= TAB 1: KELOLA GURU ================= */}
@@ -474,7 +505,7 @@ export const AdminDashboard: React.FC = () => {
                         <button
                           onClick={() => handleDeleteTeacher(teacher.uid)}
                           className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"
-                          title="Nonaktifkan Guru"
+                          title="Hapus Guru Secara Permanen"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -634,6 +665,121 @@ export const AdminDashboard: React.FC = () => {
                 Tidak ada kelas yang ditemukan. Klik tombol Tambah Kelas Baru untuk menambahkan.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= TAB 3: KELOLA SISWA ================= */}
+      {activeTab === 'students' && (
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden space-y-4">
+          {/* Filter & Search Bar */}
+          <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50/70 flex flex-col sm:flex-row gap-3 justify-between items-center">
+            <div className="relative w-full sm:w-80">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Cari nama, NIS, atau username..."
+                value={studentSearch}
+                onChange={(e) => setStudentSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-white rounded-xl border border-slate-200 text-xs sm:text-sm focus:outline-emerald-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <select
+                value={studentClassFilter}
+                onChange={(e) => setStudentClassFilter(e.target.value)}
+                className="px-3.5 py-2 bg-white rounded-xl border border-slate-200 text-xs sm:text-sm font-bold text-slate-700 cursor-pointer"
+              >
+                <option value="all">Semua Kelas ({students.length} Siswa)</option>
+                {classes.map((cls) => {
+                  const count = students.filter((s) => (s.classIds || []).includes(cls.id)).length;
+                  return (
+                    <option key={cls.id} value={cls.id}>
+                      {cls.name} ({count} Siswa)
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          </div>
+
+          {/* Students Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/50 text-[11px] font-black text-slate-400 uppercase tracking-wider">
+                  <th className="px-5 py-3.5">Profil Siswa</th>
+                  <th className="px-5 py-3.5">No. Absen / NIS</th>
+                  <th className="px-5 py-3.5">Kelas Terdaftar</th>
+                  <th className="px-5 py-3.5">Username Login</th>
+                  <th className="px-5 py-3.5 text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs sm:text-sm font-medium text-slate-700">
+                {filteredStudents.map((student) => {
+                  const studentClasses = classes.filter((c) => (student.classIds || []).includes(c.id));
+                  return (
+                    <tr key={student.uid} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={student.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${student.uid}`}
+                            alt=""
+                            className="w-9 h-9 rounded-xl bg-slate-100 object-cover border border-slate-200 shrink-0"
+                          />
+                          <div>
+                            <span className="font-bold text-slate-900 block">{student.displayName}</span>
+                            <span className="text-[11px] text-slate-400 font-mono">{student.username}</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-slate-600">
+                        <span className="font-bold">No. Absen: {student.absentNumber || '-'}</span>
+                        {student.studentNumber && (
+                          <span className="block text-[11px] text-slate-400">NIS: {student.studentNumber}</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <div className="flex flex-wrap gap-1">
+                          {studentClasses.map((c) => (
+                            <span
+                              key={c.id}
+                              className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-bold border border-emerald-100"
+                            >
+                              {c.name}
+                            </span>
+                          ))}
+                          {studentClasses.length === 0 && (
+                            <span className="text-slate-400 text-xs italic">Belum ada kelas</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 font-mono text-xs text-slate-600">
+                        {student.username || '-'}
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <button
+                          onClick={() => handleDeleteStudent(student.uid)}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all cursor-pointer inline-flex items-center gap-1.5"
+                          title="Hapus Siswa Secara Permanen"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span className="text-xs font-bold hidden sm:inline">Hapus</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredStudents.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-10 text-center text-slate-400 text-sm">
+                      Tidak ada data siswa yang cocok dengan pencarian atau filter kelas ini.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
