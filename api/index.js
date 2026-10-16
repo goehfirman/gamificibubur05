@@ -345,9 +345,10 @@ app.put('/api/collections/:collection/:id', async (req, res) => {
     if (!db[collection]) db[collection] = isArray ? [] : {};
 
     if (Array.isArray(db[collection])) {
+      const itemToSave = { ...req.body, id: req.body.id || id, uid: req.body.uid || id };
       const idx = db[collection].findIndex(item => item && (item.id === id || item.uid === id));
-      if (idx >= 0) db[collection][idx] = { ...db[collection][idx], ...req.body };
-      else db[collection].push(req.body);
+      if (idx >= 0) db[collection][idx] = { ...db[collection][idx], ...itemToSave };
+      else db[collection].push(itemToSave);
     } else {
       db[collection][id] = { ...(db[collection][id] || {}), ...req.body };
     }

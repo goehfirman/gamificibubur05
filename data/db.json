@@ -29,8 +29,8 @@
       "searchName": "administrator admin",
       "avatarUrl": "https://api.dicebear.com/7.x/bottts/svg?seed=Admin&backgroundColor=10b981",
       "schoolId": "sch_merdeka_01",
-      "createdAt": "2026-10-16T00:50:04.101Z",
-      "updatedAt": "2026-10-16T00:50:04.101Z"
+      "createdAt": "2026-10-16T01:22:15.720Z",
+      "updatedAt": "2026-10-16T01:22:15.721Z"
     }
   ],
   "classes": [],
@@ -99,5 +99,5 @@
   "paperSessions": [],
   "currentClassId": "",
   "currentUserId": "admin",
-  "_revision": 1792111804101
+  "_revision": 1792113735721
 }

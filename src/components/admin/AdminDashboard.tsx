@@ -64,6 +64,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Teacher Modal states
   const [isTeacherModalOpen, setIsTeacherModalOpen] = useState(false);
+  const [isSavingTeacher, setIsSavingTeacher] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<User | null>(null);
   const [showTeacherPassword, setShowTeacherPassword] = useState(false);
   const [teacherForm, setTeacherForm] = useState({
@@ -164,51 +165,60 @@ export const AdminDashboard: React.FC = () => {
     const name = teacherForm.displayName.trim();
     if (!name) return;
 
-    // Auto-generate username from name if empty
-    const firstWord = name.split(/[\s,.]+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-    const username = (teacherForm.username.trim() || `guru.${firstWord || 'baru'}`).toLowerCase().replace(/\s+/g, '');
-    const password = teacherForm.password.trim() || 'guru123';
+    setIsSavingTeacher(true);
+    try {
+      // Auto-generate username from name if empty
+      const firstWord = name.split(/[\s,.]+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+      const username = (teacherForm.username.trim() || `guru.${firstWord || 'baru'}`).toLowerCase().replace(/\s+/g, '');
+      const password = teacherForm.password.trim() || 'guru123';
 
-    let userToSave: User;
-    if (editingTeacher) {
-      userToSave = {
-        ...editingTeacher,
-        displayName: name,
-        searchName: name.toLowerCase(),
-        username,
-        password: teacherForm.password.trim() || editingTeacher.password || 'guru123',
-        classIds: teacherForm.classIds,
-        status: teacherForm.status || 'active',
-        updatedAt: new Date().toISOString(),
-      };
-    } else {
-      const uid = `usr_guru_${Date.now()}`;
-      userToSave = {
-        uid,
-        role: 'teacher',
-        status: 'active',
-        displayName: name,
-        searchName: name.toLowerCase(),
-        username,
-        password,
-        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${username}&backgroundColor=b6e3f4`,
-        schoolId: school?.id || 'sch_merdeka_01',
-        classIds: teacherForm.classIds,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    }
+      let userToSave: User;
+      if (editingTeacher) {
+        userToSave = {
+          ...editingTeacher,
+          id: editingTeacher.uid || editingTeacher.id,
+          displayName: name,
+          searchName: name.toLowerCase(),
+          username,
+          password: teacherForm.password.trim() || editingTeacher.password || 'guru123',
+          classIds: teacherForm.classIds,
+          status: teacherForm.status || 'active',
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        const uid = `usr_guru_${Date.now()}`;
+        userToSave = {
+          id: uid,
+          uid,
+          role: 'teacher',
+          status: 'active',
+          displayName: name,
+          searchName: name.toLowerCase(),
+          username,
+          password,
+          avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${username}&backgroundColor=b6e3f4`,
+          schoolId: school?.id || 'sch_merdeka_01',
+          classIds: teacherForm.classIds,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }
 
-    await saveTeacher(userToSave);
-    if (userToSave.classIds && userToSave.classIds.length > 0) {
-      userToSave.classIds.forEach((cId) => {
-        const cls = classes.find((c) => c.id === cId);
-        if (cls && !cls.teacherIds?.includes(userToSave.uid)) {
-          updateClass(cId, { teacherIds: [...(cls.teacherIds || []), userToSave.uid] });
-        }
-      });
+      await saveTeacher(userToSave);
+      if (userToSave.classIds && userToSave.classIds.length > 0) {
+        userToSave.classIds.forEach((cId) => {
+          const cls = classes.find((c) => c.id === cId);
+          if (cls && !cls.teacherIds?.includes(userToSave.uid)) {
+            updateClass(cId, { teacherIds: [...(cls.teacherIds || []), userToSave.uid] });
+          }
+        });
+      }
+      setIsTeacherModalOpen(false);
+    } catch (err: any) {
+      alert('Gagal menyimpan guru: ' + (err?.message || err));
+    } finally {
+      setIsSavingTeacher(false);
     }
-    setIsTeacherModalOpen(false);
   };
 
   const handleDeleteTeacher = async (uid: string) => {
@@ -1084,10 +1094,20 @@ service cloud.firestore {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                  disabled={isSavingTeacher}
+                  className="px-6 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>Simpan Guru</span>
+                  {isSavingTeacher ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Menyimpan ke Cloud...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Simpan Guru</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

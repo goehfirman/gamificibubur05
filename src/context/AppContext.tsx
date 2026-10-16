@@ -267,7 +267,7 @@ function mergeLocalAndCloud(local: any, cloud: any, deletedIds: Set<string> = ne
     (local.users || []).forEach((u: any) => {
       if (!u?.uid || cloudUids.has(u.uid) || deletedIds.has(u.uid)) return;
       const created = new Date(u.createdAt || 0).getTime();
-      if (now - created < 15000) {
+      if (now - created < 60000) {
         userMap.set(u.uid, u);
       }
     });
@@ -687,16 +687,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubUsers = subscribeToRealtimeCollection(COLLECTIONS.USERS, (items) => {
           if (!isMounted) return;
           setData((prev: any) => {
-            const validItems = (items || []).filter((u: any) => u?.uid && !deletedItemIds.current.has(u.uid));
-            return { ...prev, users: validItems };
+            const incomingUsers = (items || []).filter((u: any) => u?.uid && !deletedItemIds.current.has(u.uid));
+            const incomingUids = new Set(incomingUsers.map((u: any) => u.uid));
+            const now = Date.now();
+            const pendingPrev = (prev.users || []).filter((u: any) => {
+              if (!u?.uid || incomingUids.has(u.uid) || deletedItemIds.current.has(u.uid)) return false;
+              const created = new Date(u.createdAt || 0).getTime();
+              return now - created < 60000;
+            });
+            return { ...prev, users: [...incomingUsers, ...pendingPrev] };
           });
         });
         unsubList.push(unsubUsers);
 
         const unsubClasses = subscribeToRealtimeCollection(COLLECTIONS.CLASSES, (items) => {
           if (!isMounted) return;
-          const validClasses = (items || []).filter((c: any) => c && c.id && !deletedItemIds.current.has(c.id));
-          setData((prev: any) => ({ ...prev, classes: validClasses }));
+          setData((prev: any) => {
+            const validClasses = (items || []).filter((c: any) => c && c.id && !deletedItemIds.current.has(c.id));
+            const incomingClassIds = new Set(validClasses.map((c: any) => c.id));
+            const now = Date.now();
+            const pendingPrev = (prev.classes || []).filter((c: any) => {
+              if (!c?.id || incomingClassIds.has(c.id) || deletedItemIds.current.has(c.id)) return false;
+              const created = new Date(c.createdAt || 0).getTime();
+              return now - created < 60000;
+            });
+            return { ...prev, classes: [...validClasses, ...pendingPrev] };
+          });
         });
         unsubList.push(unsubClasses);
 
@@ -955,7 +971,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshFromCloud = async () => {
-    if (isFirestoreQuotaExceeded()) return;
     try {
       const cloudData = await loadAllFromFirestore();
       if (cloudData) {
@@ -971,7 +986,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const syncAllToCloud = async (): Promise<boolean> => {
-    if (isFirestoreQuotaExceeded()) return false;
     try {
       setIsFirebaseSynced(false);
       const res = await syncAllStateToFirestore(data);
