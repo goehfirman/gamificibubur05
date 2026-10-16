@@ -60,7 +60,7 @@ export const Header: React.FC<HeaderProps> = ({
   const unreadCount = safeNotifications.filter((n) => n && n.userId === currentUser.uid && !n.isRead).length;
 
   const safeClasses = classes || [];
-  const currentClass = safeClasses.find((c) => c.id === currentClassId) || safeClasses[0];
+  const currentClass = safeClasses.find((c) => c.id === currentClassId) || safeClasses[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
 
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#BFDBFE]/40 shadow-xs">
@@ -97,7 +97,7 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <Users className="w-3.5 h-3.5 text-[#364FFF]" />
                   <span className="hidden xs:inline">{currentClass?.name || 'Pilih Kelas'}</span>
-                  <span className="xs:hidden">{currentClass?.name.split(' ')[1] || '6E'}</span>
+                  <span className="xs:hidden">{currentClass?.name ? (currentClass.name.split(' ')[1] || currentClass.name) : 'Kelas'}</span>
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                 </button>
 

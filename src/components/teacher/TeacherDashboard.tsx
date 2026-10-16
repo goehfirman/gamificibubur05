@@ -66,7 +66,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   if (!currentUser) return null;
 
-    const currentClass = classes.find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
   const classStudents = users.filter(
     (u) => u.role === 'student' && (u.classIds || []).includes(currentClassId)
   );
@@ -188,7 +188,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <span className="text-2xl sm:text-3xl font-black text-[#101936] font-display">
               {classStudents.length}
             </span>
-            <span className="text-xs text-slate-400 font-medium">Siswa {currentClass.name}</span>
+            <span className="text-xs text-slate-400 font-medium">Siswa {currentClass?.name || 'Belum Ada Kelas'}</span>
           </div>
         </div>
 

@@ -22,7 +22,7 @@ export const StudentLeaderboard: React.FC = () => {
 
   if (!currentUser) return null;
 
-  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
 
   // Get only students of current class
   const classStudents = users.filter(
@@ -110,7 +110,7 @@ export const StudentLeaderboard: React.FC = () => {
           <div>
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md text-[#FFD83D] border border-white/15 text-xs font-black mb-2">
               <Trophy className="w-3.5 h-3.5 fill-current text-[#FFD83D]" />
-              <span>Peringkat Belajar {currentClass?.name}</span>
+              <span>Peringkat Belajar {currentClass?.name || 'Kelas'}</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold font-display">
               Papan Prestasi Kelas

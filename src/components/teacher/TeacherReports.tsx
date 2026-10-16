@@ -29,7 +29,7 @@ export const TeacherReports: React.FC = () => {
 
   const [activeReportTab, setActiveReportTab] = useState<'grades' | 'gamification'>('grades');
 
-  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
   const classStudents = users
     .filter((u) => u.role === 'student' && (u.classIds || []).includes(currentClassId))
     .sort((a, b) => (a.absentNumber || 99) - (b.absentNumber || 99));
@@ -74,7 +74,7 @@ export const TeacherReports: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Rekap_Nilai_${currentClass.name.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `Rekap_Nilai_${currentClass?.name ? currentClass.name.replace(/\s+/g, '_') : 'Kelas'}_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -131,7 +131,7 @@ export const TeacherReports: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Rekap_Kelas_${currentClass.name.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `Rekap_Kelas_${currentClass?.name ? currentClass.name.replace(/\s+/g, '_') : 'Kelas'}_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

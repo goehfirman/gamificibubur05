@@ -108,7 +108,7 @@ export const TeacherStudents: React.FC = () => {
 
   const editPhotoInputRef = useRef<HTMLInputElement>(null);
 
-  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
 
   const classStudents = users
     .filter((u) => {

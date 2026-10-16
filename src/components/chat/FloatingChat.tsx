@@ -92,7 +92,7 @@ export const FloatingChat: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Current classroom info
-  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === currentClassId) || classes[0] || { id: 'cls_none', name: 'Kelas 6E', grade: 6 };
   const classNameDisplay = currentClass ? currentClass.name : 'Kelas 6E';
 
   // Identify teachers and students in current class

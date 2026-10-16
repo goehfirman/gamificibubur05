@@ -60,7 +60,7 @@ export const StudentProfile: React.FC<StudentProfileProps> = ({ onOpenAvatarPick
 
   const studentXp = stats.totalXp !== undefined ? stats.totalXp : (stats.totalPoints || 0);
   const levelInfo = getLevelInfo(studentXp, levels);
-  const currentClass = (classes || []).find((c) => c.id === currentClassId) || classes[0];
+  const currentClass = (classes || []).find((c) => c.id === currentClassId) || (classes || [])[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
 
   const myBadges = safeUserBadges.filter((b) => b && b.userId === currentUser.uid);
   const myLedger = safePointLedger.filter((l) => l && l.userId === currentUser.uid);
@@ -93,7 +93,7 @@ export const StudentProfile: React.FC<StudentProfileProps> = ({ onOpenAvatarPick
           <div className="flex-1 text-center sm:text-left min-w-0">
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mb-2">
               <span className="px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold">
-                {currentClass.name}
+                {currentClass?.name || 'Belum Ada Kelas'}
               </span>
               <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold flex items-center gap-1">
                 <Star className="w-3 h-3 fill-current" />

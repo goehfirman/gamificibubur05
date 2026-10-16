@@ -81,7 +81,7 @@ export const TeacherStudentInputModal: React.FC<TeacherStudentInputModalProps> =
 
   if (!isOpen) return null;
 
-  const currentClass = classes.find((c) => c.id === selectedClassId) || classes[0];
+  const currentClass = classes.find((c) => c.id === selectedClassId) || classes[0] || { id: 'cls_none', name: 'Belum Ada Kelas', grade: 6 };
 
   // Handle manual photo select
   const handleManualPhotoSelect = async (file: File) => {
