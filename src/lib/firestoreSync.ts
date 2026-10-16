@@ -9,6 +9,7 @@ import {
   writeBatch,
   onSnapshot,
 } from 'firebase/firestore';
+import { broadcastSupabaseUpdate, subscribeToSupabaseEvents } from './supabase';
 
 export const COLLECTIONS = {
   USERS: 'users',
@@ -42,6 +43,10 @@ let pollingInterval: any = null;
 let isPermissionDenied = false;
 let quotaExceededState = false;
 
+// Mode Supabase / Server Primary: Matikan interaksi langsung client dengan Cloud Firestore
+// agar kuota harian Firebase tidak tersedot dan listener Firestore tidak menimpa data baru
+export const IS_SUPABASE_OR_SERVER_PRIMARY = true;
+
 // IndexedDB initialization for offline mode
 const store = localforage.createInstance({
   name: 'GamiClassDB'
@@ -52,7 +57,7 @@ export function isFirestorePermissionDenied(): boolean {
 }
 
 export function isFirestoreQuotaExceeded(): boolean {
-  return quotaExceededState;
+  return IS_SUPABASE_OR_SERVER_PRIMARY || quotaExceededState;
 }
 
 export function setFirestoreQuotaExceeded(val: boolean) {
@@ -81,6 +86,10 @@ function handleFirestoreError(operation: string, collName: string, id: any, err:
     }
   } else if (isQuotaError(err)) {
     setFirestoreQuotaExceeded(true);
+    firestoreUnsubs.forEach((unsub) => {
+      try { unsub(); } catch (e) {}
+    });
+    firestoreUnsubs.clear();
     console.warn(`[Firestore ${operation}] ⚠️ Kuota Firestore Harian Tercapai (RESOURCE_EXHAUSTED). Menggunakan sinkronisasi database server/lokal.`);
   } else {
     console.warn(`[Firestore ${operation}] Warning (${collName}/${id}):`, err?.message || err);
@@ -145,9 +154,19 @@ function removeDocFromCache(collection: string, docId: string) {
   persistCache();
 }
 
+export async function resetAllClientData() {
+  collectionCache.clear();
+  try {
+    await store.clear();
+    localStorage.removeItem('gamiclass_data_v3');
+    localStorage.removeItem('deleted_item_ids_v1');
+    localStorage.removeItem('offline_db_cache_v5');
+    sessionStorage.removeItem('gamiclass_session_user');
+  } catch (e) {}
+}
+
 function populateFullCache(db: Record<string, any>) {
   if (!db || typeof db !== 'object') return;
-  const now = Date.now();
   Object.keys(db).forEach((coll) => {
     let val = db[coll];
     if (val == null) return;
@@ -156,16 +175,7 @@ function populateFullCache(db: Record<string, any>) {
     }
     if (Array.isArray(val)) {
       const incoming = val.filter((i: any) => i != null);
-      const incomingIds = new Set(incoming.map((i: any) => String(i?.id || i?.uid)));
-      // Pertahankan dokumen lokal yang baru dibuat dalam 60 detik terakhir jika belum ada di data server
-      const existing = collectionCache.get(coll) || [];
-      const pendingLocal = existing.filter((item: any) => {
-        const id = String(item?.id || item?.uid);
-        if (!id || incomingIds.has(id)) return false;
-        const created = item?.createdAt ? new Date(item.createdAt).getTime() : now;
-        return now - created < 60000;
-      });
-      collectionCache.set(coll, [...incoming, ...pendingLocal]);
+      collectionCache.set(coll, incoming);
       notifyListeners(coll);
     }
   });
@@ -197,11 +207,15 @@ async function fetchDeltaSync() {
   }
 }
 
-// Start polling
+// Start polling & Realtime Push
 if (typeof window !== 'undefined') {
   initOfflineCache().then(() => {
     fetchDeltaSync();
     pollingInterval = setInterval(fetchDeltaSync, 1500);
+    // Realtime Push via Supabase Broadcast
+    subscribeToSupabaseEvents(() => {
+      fetchDeltaSync();
+    });
   });
 }
 
@@ -211,6 +225,7 @@ if (typeof window !== 'undefined') {
 export async function syncDocToFirestore(collectionName: string, docId: string, data: any) {
   const idStr = String(docId);
   updateDocInCache(collectionName, idStr, data);
+  broadcastSupabaseUpdate(collectionName, idStr);
 
   // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
   const apiPromise = fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
@@ -223,6 +238,7 @@ export async function syncDocToFirestore(collectionName: string, docId: string, 
 
   // 2. Direct write ke Cloud Firestore dengan timeout 2500ms agar jika kuota habis / offline tidak menggantung
   const firestorePromise = (async () => {
+    if (isFirestoreQuotaExceeded()) return;
     try {
       const docRef = doc(db, collectionName, idStr);
       const writeTask = setDoc(docRef, cleanForFirestore(data), { merge: true });
@@ -244,7 +260,10 @@ export async function syncDocToFirestore(collectionName: string, docId: string, 
  */
 export async function bulkDeleteFromFirestore(deletes: { collection: string, id: string }[]) {
   if (!Array.isArray(deletes) || deletes.length === 0) return;
-  deletes.forEach(d => removeDocFromCache(d.collection, String(d.id)));
+  deletes.forEach(d => {
+    removeDocFromCache(d.collection, String(d.id));
+    broadcastSupabaseUpdate(d.collection, String(d.id));
+  });
 
   // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
   const apiPromise = fetch('/api/bulk-delete', {
@@ -257,6 +276,7 @@ export async function bulkDeleteFromFirestore(deletes: { collection: string, id:
 
   // 2. Direct batch delete ke Cloud Firestore dengan timeout 2500ms
   const firestorePromise = (async () => {
+    if (isFirestoreQuotaExceeded()) return;
     try {
       const batch = writeBatch(db);
       let count = 0;
@@ -289,6 +309,7 @@ export async function bulkDeleteFromFirestore(deletes: { collection: string, id:
 export async function deleteDocFromFirestore(collectionName: string, docId: string) {
   const idStr = String(docId);
   removeDocFromCache(collectionName, idStr);
+  broadcastSupabaseUpdate(collectionName, idStr);
 
   // 1. Dual-sync ke Serverless API / Local API (paralel & non-blocking)
   const apiPromise = fetch(`/api/collections/${collectionName}/${encodeURIComponent(idStr)}`, {
@@ -299,6 +320,7 @@ export async function deleteDocFromFirestore(collectionName: string, docId: stri
 
   // 2. Direct delete ke Cloud Firestore dengan timeout 2500ms
   const firestorePromise = (async () => {
+    if (isFirestoreQuotaExceeded()) return;
     try {
       const docRef = doc(db, collectionName, idStr);
       const deleteTask = deleteDoc(docRef);
@@ -364,6 +386,7 @@ export async function loadAllFromFirestore() {
 
 function ensureFirestoreRealtimeListener(collName: string) {
   if (typeof window === 'undefined') return;
+  if (isFirestoreQuotaExceeded()) return;
   if (firestoreUnsubs.has(collName)) return;
 
   try {

@@ -21,8 +21,8 @@ app.get('*', (req, res, next) => {
 const PORT = process.env.PORT || 3033;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Gami-Class Local Development Server running on port ${PORT}`);
-  if (process.env.POSTGRES_URL) {
-    console.log(`📦 Connected to Vercel PostgreSQL`);
+  if (process.env.POSTGRES_URL || process.env.DATABASE_URL) {
+    console.log(`📦 Connected to PostgreSQL / Supabase`);
   } else {
     console.log(`🗄️  Running in Local Offline Mode (data/db.json)`);
   }

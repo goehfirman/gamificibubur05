@@ -688,27 +688,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!isMounted) return;
           setData((prev: any) => {
             const validItems = (items || []).filter((u: any) => u?.uid && !deletedItemIds.current.has(u.uid));
-            const firestoreUids = new Set(validItems.map((u: any) => u.uid));
-            const now = Date.now();
-            // Preserve locally provisioned users from the last 60s not yet in Firestore
-            const pendingLocal = (prev.users || []).filter((u: any) => {
-              if (!u?.uid || deletedItemIds.current.has(u.uid) || firestoreUids.has(u.uid)) return false;
-              const created = u?.createdAt ? new Date(u.createdAt).getTime() : now;
-              return now - created < 60000;
-            });
-            const merged = validItems.map((cloudUser: any) => {
-              const local = (prev.users || []).find((u: any) => u.uid === cloudUser.uid);
-              if (local) {
-                const cloudTime = new Date(cloudUser.updatedAt || cloudUser.createdAt || 0).getTime();
-                const localTime = new Date(local.updatedAt || local.createdAt || 0).getTime();
-                if (localTime > cloudTime && now - localTime < 10000) {
-                  return { ...cloudUser, ...local };
-                }
-                return { ...local, ...cloudUser };
-              }
-              return cloudUser;
-            });
-            return { ...prev, users: [...merged, ...pendingLocal] };
+            return { ...prev, users: validItems };
           });
         });
         unsubList.push(unsubUsers);
@@ -716,16 +696,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const unsubClasses = subscribeToRealtimeCollection(COLLECTIONS.CLASSES, (items) => {
           if (!isMounted) return;
           const validClasses = (items || []).filter((c: any) => c && c.id && !deletedItemIds.current.has(c.id));
-          const incomingIds = new Set(validClasses.map((c: any) => c.id));
-          const now = Date.now();
-          setData((prev: any) => {
-            const pendingLocalClasses = (prev.classes || []).filter((c: any) => {
-              if (!c?.id || deletedItemIds.current.has(c.id) || incomingIds.has(c.id)) return false;
-              const created = c?.createdAt ? new Date(c.createdAt).getTime() : now;
-              return now - created < 60000;
-            });
-            return { ...prev, classes: [...validClasses, ...pendingLocalClasses] };
-          });
+          setData((prev: any) => ({ ...prev, classes: validClasses }));
         });
         unsubList.push(unsubClasses);
 
