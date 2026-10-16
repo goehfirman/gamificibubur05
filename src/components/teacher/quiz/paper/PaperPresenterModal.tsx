@@ -4,6 +4,7 @@ import {
   Minimize2,
   QrCode,
   Camera,
+  CameraOff,
   ChevronLeft,
   ChevronRight,
   Lock,
@@ -17,22 +18,29 @@ import {
   Sparkles,
   BarChart2,
   RefreshCw,
+  Volume2,
+  VolumeX,
+  SwitchCamera,
+  AlertCircle,
+  HelpCircle,
 } from 'lucide-react';
+import jsAruco2 from 'js-aruco2';
 import { QRCodeSVG } from 'qrcode.react';
-import { Quiz, QuizQuestion, User } from '../../../../types';
-import { PaperModeSession, PaperModeAnswer } from '../../../../types/paperMode';
+import { Quiz, User } from '../../../../types';
+import { PaperModeSession, PaperModeAnswer, PaperOption } from '../../../../types/paperMode';
 import { useApp } from '../../../../context/AppContext';
 import { LatexRenderer } from '../../../../utils/latex';
 import { RichQuestionPrompt } from '../../../common/RichQuestionPrompt';
-import { controlPaperSession } from '../../../../lib/firestoreSync';
+import { controlPaperSession, submitPaperAnswersBatch } from '../../../../lib/firestoreSync';
 import { fireCelebrationConfetti } from '../../../../utils/gamification';
+import { getMarkerOrientation } from '../../../../utils/aruco';
 
 interface PaperPresenterModalProps {
   isOpen: boolean;
   onClose: () => void;
   quiz: Quiz;
   classId: string;
-  onOpenScannerOnThisDevice: () => void;
+  onOpenScannerOnThisDevice?: () => void;
   onFinishAndShowAnalytics: (session: PaperModeSession) => void;
 }
 
@@ -70,6 +78,16 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     });
   }, [users, classId]);
 
+  // Marker ID mapping
+  const studentByMarkerId = useMemo(() => {
+    const map = new Map<number, User>();
+    classStudents.forEach((st, idx) => {
+      const markerId = st.absentNumber && st.absentNumber > 0 ? st.absentNumber : idx + 1;
+      map.set(markerId, st);
+    });
+    return map;
+  }, [classStudents]);
+
   // Session State
   const sessionId = useMemo(() => `paper_${quiz.id}_${classId}`, [quiz.id, classId]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -80,6 +98,20 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
   const [answersByQuestion, setAnswersByQuestion] = useState<
     Record<number, Record<string, PaperModeAnswer>>
   >({});
+
+  // PID Camera & Scanner States
+  const [isCameraActive, setIsCameraActive] = useState(true);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [visibleMarkersCount, setVisibleMarkersCount] = useState(0);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const latestSessionRef = useRef<PaperModeSession | null>(null);
 
   const activeQuestion = quiz.questions[currentQuestionIndex] || quiz.questions[0];
 
@@ -104,38 +136,56 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     }).length;
   }, [classStudents, currentAnswers]);
 
+  // Audio Beep Feedback on detection
+  const playDetectSound = () => {
+    if (!soundEnabled) return;
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+    } catch {}
+  };
+
+  // Enumerate Camera Devices for PID / Webcams
+  useEffect(() => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    navigator.mediaDevices.enumerateDevices().then((devices) => {
+      const inputs = devices.filter((d) => d.kind === 'videoinput');
+      setVideoDevices(inputs);
+      if (inputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(inputs[0].deviceId);
+      }
+    }).catch(() => {});
+  }, []);
+
   // Poll / fetch session status periodically or sync via SSE
   useEffect(() => {
     if (!isOpen) return;
 
-    // Fetch initial or updated session
     const loadSession = async () => {
       try {
         const res = await fetch(`/api/collections/paperSessions/${encodeURIComponent(sessionId)}`);
         if (res.ok) {
           const session: PaperModeSession = await res.json();
           if (session && session.id) {
+            latestSessionRef.current = session;
             setCurrentQuestionIndex(session.currentQuestionIndex ?? 0);
             setIsLocked(session.status === 'question_closed');
             setShowLiveStats(Boolean(session.showLiveStats));
             setShowCorrectAnswer(Boolean(session.showCorrectAnswer));
             if (session.answersByQuestion) {
               setAnswersByQuestion(session.answersByQuestion);
-            }
-          }
-        } else {
-          // Direct endpoint fallback
-          const altRes = await fetch(`/api/paper-sessions/${encodeURIComponent(sessionId)}`);
-          if (altRes.ok) {
-            const session: PaperModeSession = await altRes.json();
-            if (session && session.id) {
-              setCurrentQuestionIndex(session.currentQuestionIndex ?? 0);
-              setIsLocked(session.status === 'question_closed');
-              setShowLiveStats(Boolean(session.showLiveStats));
-              setShowCorrectAnswer(Boolean(session.showCorrectAnswer));
-              if (session.answersByQuestion) {
-                setAnswersByQuestion(session.answersByQuestion);
-              }
             }
           }
         }
@@ -145,7 +195,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     };
 
     loadSession();
-    const interval = setInterval(loadSession, 1200);
+    const interval = setInterval(loadSession, 1500);
 
     // Instant Real-time SSE Events for Paper Mode
     const handlePaperAnswer = (e: any) => {
@@ -201,6 +251,214 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     };
   }, [isOpen, sessionId]);
 
+  // Start Camera Stream for PID
+  const startCamera = async () => {
+    if (!isCameraActive) return;
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+
+      const constraints: MediaStreamConstraints = {
+        video: selectedDeviceId
+          ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+      setCameraError(null);
+    } catch (err: any) {
+      console.warn('Camera start error on PID:', err);
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        streamRef.current = fallbackStream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = fallbackStream;
+          videoRef.current.play().catch(() => {});
+        }
+        setCameraError(null);
+      } catch (e: any) {
+        setCameraError('Kamera PID belum diizinkan atau tidak terdeteksi.');
+      }
+    }
+  };
+
+  // Real-time PID Camera ArUco Detection Loop
+  useEffect(() => {
+    if (!isOpen || !isCameraActive) return;
+
+    startCamera();
+
+    const AR = (jsAruco2 as any).AR || (jsAruco2 as any);
+    const detector = new AR.Detector({ dictionaryName: 'ARUCO' });
+
+    let animationFrameId: number;
+    let lastProcessTime = 0;
+
+    const processFrame = () => {
+      const now = performance.now();
+      // Throttle to ~18-20 fps for smooth detection on PID without lag
+      if (now - lastProcessTime > 55) {
+        lastProcessTime = now;
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+
+        if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA) {
+          const width = video.videoWidth || 640;
+          const height = video.videoHeight || 480;
+
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, width, height);
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const markers = detector.detect(imageData);
+
+            if (markers && markers.length > 0) {
+              const batchAnswers: PaperModeAnswer[] = [];
+              let hasNewAnswer = false;
+              let validCount = 0;
+
+              markers.forEach((marker: any) => {
+                if (!marker || !marker.corners || marker.corners.length < 4) return;
+                const markerId = marker.id;
+                if (typeof markerId !== 'number' || markerId <= 0 || markerId > 150) return;
+
+                const student = studentByMarkerId.get(markerId);
+                if (!student && markerId > Math.max(classStudents.length + 5, 45)) return;
+
+                const [c0, c1, c2, c3] = marker.corners;
+                const edge1 = Math.hypot(c1.x - c0.x, c1.y - c0.y);
+                const edge2 = Math.hypot(c2.x - c1.x, c2.y - c1.y);
+                if (Math.min(edge1, edge2) < 14) return;
+
+                validCount++;
+                const { option, isAmbiguous } = getMarkerOrientation(marker.corners);
+                const studentName = student ? student.displayName : `Siswa #${markerId}`;
+                const studentId = student ? student.uid : `marker_${markerId}`;
+
+                // Draw bounding box
+                ctx.beginPath();
+                ctx.moveTo(c0.x, c0.y);
+                ctx.lineTo(c1.x, c1.y);
+                ctx.lineTo(c2.x, c2.y);
+                ctx.lineTo(c3.x, c3.y);
+                ctx.closePath();
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = isAmbiguous ? '#f59e0b' : '#10b981';
+                ctx.stroke();
+
+                // Draw AR label pill
+                const centerX = (c0.x + c1.x + c2.x + c3.x) / 4;
+                const centerY = (c0.y + c1.y + c2.y + c3.y) / 4;
+                const labelText = isAmbiguous
+                  ? `${studentName} • Tegakkan Kartu`
+                  : `✓ ${studentName} • Terekam`;
+
+                ctx.font = 'bold 14px ui-sans-serif, system-ui';
+                const textWidth = ctx.measureText(labelText).width;
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+                ctx.beginPath();
+                if (ctx.roundRect) {
+                  ctx.roundRect(centerX - textWidth / 2 - 10, centerY - 28, textWidth + 20, 26, 6);
+                } else {
+                  ctx.rect(centerX - textWidth / 2 - 10, centerY - 28, textWidth + 20, 26);
+                }
+                ctx.fill();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = isAmbiguous ? '#f59e0b' : '#10b981';
+                ctx.stroke();
+
+                ctx.fillStyle = isAmbiguous ? '#fcd34d' : '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(labelText, centerX, centerY - 15);
+
+                // If not locked and not ambiguously tilted, record answer!
+                if (!isLocked && !isAmbiguous) {
+                  const existingAns = currentAnswers[studentId] || currentAnswers[`marker_${markerId}`];
+                  if (!existingAns || existingAns.selectedOption !== option) {
+                    const ansPayload: PaperModeAnswer = {
+                      studentId,
+                      markerId,
+                      studentName,
+                      selectedOption: option,
+                      timestamp: Date.now(),
+                    };
+                    batchAnswers.push(ansPayload);
+                    hasNewAnswer = true;
+                  }
+                }
+              });
+
+              setVisibleMarkersCount(validCount);
+
+              if (batchAnswers.length > 0) {
+                setAnswersByQuestion((prev) => {
+                  const qMap = { ...(prev[currentQuestionIndex] || {}) };
+                  batchAnswers.forEach((ans) => {
+                    qMap[ans.studentId] = ans;
+                    qMap[`marker_${ans.markerId}`] = ans;
+                  });
+                  return { ...prev, [currentQuestionIndex]: qMap };
+                });
+
+                submitPaperAnswersBatch(sessionId, currentQuestionIndex, batchAnswers);
+
+                if (hasNewAnswer) {
+                  playDetectSound();
+                }
+
+                batchAnswers.forEach((ans) => {
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(
+                      new CustomEvent('paper_answer', {
+                        detail: { sessionId, questionIndex: currentQuestionIndex, answer: ans },
+                      })
+                    );
+                  }
+                });
+              }
+            } else {
+              setVisibleMarkersCount(0);
+            }
+          }
+        }
+      }
+      animationFrameId = requestAnimationFrame(processFrame);
+    };
+
+    animationFrameId = requestAnimationFrame(processFrame);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [
+    isOpen,
+    isCameraActive,
+    selectedDeviceId,
+    currentQuestionIndex,
+    isLocked,
+    studentByMarkerId,
+    currentAnswers,
+    sessionId,
+  ]);
+
   // Fullscreen toggle handler
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -254,7 +512,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
 
     if (nextReveal) {
       fireCelebrationConfetti();
-      setIsLocked(true); // Lock question so students cannot cheat by altering card after key is shown
+      setIsLocked(true);
     }
 
     await controlPaperSession(sessionId, {
@@ -281,23 +539,23 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     onFinishAndShowAnalytics(sessionObj);
   };
 
-  // URL for mobile phone scanner connection QR code
+  // Optional URL for mobile phone scanner
   const scannerUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/?mode=paper-scanner&sessionId=${encodeURIComponent(sessionId)}&quizId=${encodeURIComponent(quiz.id)}&classId=${encodeURIComponent(classId)}`;
 
   if (!isOpen || !activeQuestion) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col overflow-hidden select-none font-sans">
-      {/* Top Projector Bar */}
-      <header className="px-6 py-4 bg-slate-900/80 border-b border-slate-800 backdrop-blur-md flex items-center justify-between shrink-0 shadow-lg">
+      {/* Top PID Bar */}
+      <header className="px-6 py-3.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-lg">
         {/* Quiz Info */}
-        <div className="flex items-center gap-4">
-          <div className="px-3.5 py-1.5 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-extrabold text-sm flex items-center gap-2">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="px-3.5 py-1.5 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-black text-xs sm:text-sm flex items-center gap-2 shrink-0">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>MODE KERTAS</span>
+            <span>MODE KERTAS PID</span>
           </div>
-          <div>
-            <h1 className="text-xl font-black tracking-tight text-white leading-tight">
+          <div className="min-w-0 truncate">
+            <h1 className="text-lg sm:text-xl font-black tracking-tight text-white leading-tight truncate">
               {quiz.title}
             </h1>
             <p className="text-xs font-semibold text-slate-400">
@@ -311,12 +569,12 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
         </div>
 
         {/* Live Answer Status & Controls */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {/* Answered Counter */}
-          <div className="px-4 py-2 rounded-2xl bg-slate-800/90 border border-slate-700 flex items-center gap-3">
+          <div className="px-3.5 py-1.5 rounded-2xl bg-slate-800/90 border border-slate-700 flex items-center gap-3">
             <Users className="w-4 h-4 text-emerald-400" />
             <div className="text-right">
-              <div className="text-sm font-black text-white leading-none flex items-center gap-1.5 justify-end">
+              <div className="text-xs sm:text-sm font-black text-white leading-none flex items-center gap-1.5 justify-end">
                 <span>{answeredCount} / {classStudents.length}</span>
                 {isLocked ? (
                   <span className="px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-bold">
@@ -324,14 +582,14 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                   </span>
                 ) : (
                   <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-bold">
-                    Bisa Ubah
+                    Merekam
                   </span>
                 )}
               </div>
               <div className="text-[10px] font-bold text-slate-400">Siswa Menjawab</div>
             </div>
-            {/* Progress circle or bar */}
-            <div className="w-16 h-2 bg-slate-700 rounded-full overflow-hidden">
+            {/* Progress bar */}
+            <div className="w-14 sm:w-16 h-2 bg-slate-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-emerald-500 transition-all duration-300 rounded-full"
                 style={{
@@ -343,33 +601,23 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
             </div>
           </div>
 
-          {/* QR Code Connect Mobile Button */}
+          {/* QR Code Connect Mobile Button (Opsional) */}
           <button
             type="button"
             onClick={() => setShowQrModal(true)}
-            title="Pindai QR dengan HP Guru untuk membuka kamera pemindai"
-            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 font-bold text-xs flex items-center gap-2 transition-all cursor-pointer"
+            title="Hubungkan HP sebagai Remote Tambahan (Opsional)"
+            className="hidden md:flex px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 font-bold text-xs items-center gap-1.5 transition-all cursor-pointer"
           >
             <QrCode className="w-4 h-4 text-indigo-400" />
-            <span>Hubungkan HP</span>
-          </button>
-
-          {/* Scanner on this device */}
-          <button
-            type="button"
-            onClick={onOpenScannerOnThisDevice}
-            title="Buka Kamera Pemindai di Laptop ini"
-            className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs flex items-center gap-2 transition-all cursor-pointer shadow-md"
-          >
-            <Camera className="w-4 h-4" />
-            <span>Buka Pemindai</span>
+            <span>HP Remote (Opsional)</span>
           </button>
 
           {/* Fullscreen Toggle */}
           <button
             type="button"
             onClick={toggleFullscreen}
-            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer"
+            title="Layar Penuh PID"
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
@@ -378,19 +626,20 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-2.5 rounded-xl bg-slate-800 hover:bg-rose-900/60 text-slate-300 hover:text-white transition-colors"
+            className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/60 text-slate-300 hover:text-white transition-colors cursor-pointer"
+            title="Tutup Sesi Kuis"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       </header>
 
-      {/* Main Projector Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left / Center Area: Question & Options (70% width) */}
-        <div className="flex-1 flex flex-col p-8 overflow-y-auto space-y-6">
+      {/* Main Unified PID Screen: Left Question Display, Right Camera & Student Live Responses */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        {/* Left Area: Large Question & Options for Class (60-65% width) */}
+        <div className="flex-1 flex flex-col p-6 sm:p-8 overflow-y-auto space-y-6">
           {/* Question Prompt */}
-          <div className="bg-slate-900/90 border border-slate-800 p-8 rounded-3xl shadow-xl space-y-4">
+          <div className="bg-slate-900/90 border border-slate-800 p-6 sm:p-8 rounded-3xl shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <span className="px-3.5 py-1.5 rounded-xl bg-indigo-500/20 text-indigo-300 font-black text-sm border border-indigo-500/30">
                 Pertanyaan #{currentQuestionIndex + 1}
@@ -403,7 +652,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
               )}
             </div>
 
-            <div className="text-2xl sm:text-3xl font-extrabold text-white leading-relaxed tracking-wide">
+            <div className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white leading-relaxed tracking-wide">
               <RichQuestionPrompt text={activeQuestion.prompt} fallbackImageUrl={activeQuestion.imageUrl} theme="dark" />
             </div>
           </div>
@@ -416,7 +665,6 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                 activeQuestion.correctOptionIndex !== undefined &&
                 activeQuestion.correctOptionIndex === optIdx;
 
-              // Color themes for options
               const themeStyles = {
                 A: {
                   badge: 'bg-rose-500 text-white',
@@ -441,18 +689,16 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
               }[letter];
 
               const count = optionStats[letter] || 0;
-              const percent =
-                answeredCount > 0 ? Math.round((count / answeredCount) * 100) : 0;
-
+              const percent = answeredCount > 0 ? Math.round((count / answeredCount) * 100) : 0;
               const isHighlightedCorrect = showCorrectAnswer && isCorrectAnswerKey;
               const isDimmed = showCorrectAnswer && !isCorrectAnswerKey;
 
               return (
                 <div
                   key={letter}
-                  className={`p-6 rounded-3xl border-2 transition-all relative flex flex-col justify-between ${
+                  className={`p-5 sm:p-6 rounded-3xl border-2 transition-all relative flex flex-col justify-between ${
                     isHighlightedCorrect
-                      ? 'bg-emerald-950/60 border-emerald-400 ring-4 ring-emerald-400/20 shadow-2xl scale-[1.01]'
+                      ? 'bg-emerald-950/70 border-emerald-400 ring-4 ring-emerald-400/30 shadow-2xl scale-[1.01]'
                       : isDimmed
                       ? 'bg-slate-900/40 border-slate-800/60 opacity-40'
                       : `${themeStyles.bg} ${themeStyles.border}`
@@ -471,7 +717,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                     </div>
                   </div>
 
-                  {/* Live Stats bar (if enabled) */}
+                  {/* Live Stats bar when answer revealed */}
                   {showLiveStats && (
                     <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs">
                       <div className="flex-1 mr-4">
@@ -508,33 +754,141 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
           )}
         </div>
 
-        {/* Right Sidebar: Live Student Roster Grid (30% width) */}
-        <div className="w-96 border-l border-slate-800 bg-slate-900/60 flex flex-col shrink-0">
-          <div className="p-4 border-b border-slate-800 flex flex-col gap-1.5 bg-slate-900">
+        {/* Right Sidebar: Live PID Camera Feed + Student Roster Grid (35-40% width) */}
+        <div className="w-full lg:w-[420px] xl:w-[460px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900/80 flex flex-col shrink-0 overflow-hidden">
+          {/* PID CAMERA SECTION */}
+          <div className="p-4 border-b border-slate-800 bg-slate-900 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                <span className="text-xs font-black uppercase tracking-wider text-slate-200">
+                  Kamera Pemindai PID
+                </span>
+              </div>
+
+              {/* Camera Controls */}
+              <div className="flex items-center gap-2">
+                {/* Device Selector */}
+                {videoDevices.length > 1 && (
+                  <select
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    className="px-2 py-1 bg-slate-800 border border-slate-700 text-[11px] font-bold rounded-lg text-slate-300 focus:outline-none"
+                    title="Pilih Kamera"
+                  >
+                    {videoDevices.map((d, i) => (
+                      <option key={d.deviceId || i} value={d.deviceId}>
+                        {d.label || `Kamera ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {/* Sound Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setSoundEnabled(!soundEnabled)}
+                  className={`p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                    soundEnabled ? 'bg-slate-800 text-indigo-300 border-indigo-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'
+                  }`}
+                  title={soundEnabled ? 'Suara Deteksi Aktif' : 'Suara Deteksi Dibisukan'}
+                >
+                  {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                </button>
+
+                {/* Camera Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setIsCameraActive(!isCameraActive)}
+                  className={`p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                    isCameraActive ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                  }`}
+                  title={isCameraActive ? 'Jeda Kamera PID' : 'Aktifkan Kamera PID'}
+                >
+                  {isCameraActive ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Live Camera Viewport */}
+            <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-slate-700 shadow-inner flex items-center justify-center">
+              {isCameraActive ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    playsInline
+                    muted
+                    autoPlay
+                    className="w-full h-full object-cover"
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                  />
+                  {/* Floating detection overlay badge */}
+                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+                    <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-black text-emerald-400 border border-emerald-500/30">
+                      {visibleMarkersCount > 0
+                        ? `✓ ${visibleMarkersCount} Kartu Terdeteksi`
+                        : 'Mengarahkan ke kelas...'}
+                    </span>
+                    <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-bold text-slate-300 border border-slate-700">
+                      Auto-Scan
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="p-4 text-center space-y-2">
+                  <CameraOff className="w-8 h-8 text-slate-500 mx-auto" />
+                  <p className="text-xs font-bold text-slate-400">Kamera PID sedang dijeda</p>
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraActive(true)}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs cursor-pointer shadow-md"
+                  >
+                    Nyalakan Kamera
+                  </button>
+                </div>
+              )}
+
+              {/* Camera Error Banner */}
+              {cameraError && isCameraActive && (
+                <div className="absolute inset-0 p-4 bg-slate-950/90 flex flex-col items-center justify-center text-center space-y-2 z-10">
+                  <AlertCircle className="w-8 h-8 text-amber-400" />
+                  <p className="text-xs text-amber-200 font-medium">{cameraError}</p>
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs cursor-pointer shadow-md"
+                  >
+                    Coba Hubungkan Lagi
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* STUDENT ROSTER SECTION */}
+          <div className="p-3 border-b border-slate-800 flex flex-col gap-1 bg-slate-900">
             <div className="flex items-center justify-between">
               <span className="text-xs font-black uppercase tracking-wider text-slate-300">
-                Daftar Siswa ({answeredCount}/{classStudents.length})
+                Daftar Respon Siswa ({answeredCount}/{classStudents.length})
               </span>
               {isLocked ? (
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">
-                  <Lock className="w-3 h-3" /> Soal Terkunci
+                  <Lock className="w-3 h-3" /> Jawaban Terkunci
                 </span>
               ) : (
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  Bisa Ubah Jawaban
+                  Merekam Kartu Murid
                 </span>
               )}
             </div>
-            <p className="text-[10px] text-slate-400 leading-tight">
-              {isLocked
-                ? '🔒 Soal telah dikunci. Jawaban tidak dapat diubah lagi.'
-                : '● Bertanda Hijau = Terekam. Murid bebas memutar kartu untuk merubah jawaban sampai guru menyelesaikan soal.'}
-            </p>
           </div>
 
-          {/* Student Grid */}
-          <div className="flex-1 p-4 overflow-y-auto grid grid-cols-2 gap-2 content-start">
+          {/* Student Grid (Scrollable) */}
+          <div className="flex-1 p-3 overflow-y-auto grid grid-cols-2 gap-2 content-start">
             {classStudents.map((st, index) => {
               const markerId = st.absentNumber && st.absentNumber > 0 ? st.absentNumber : index + 1;
               const hasAnswered = Boolean(
@@ -554,9 +908,9 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
               return (
                 <div
                   key={st.uid}
-                  className={`p-3 rounded-2xl border transition-all duration-300 flex items-center gap-2.5 ${
+                  className={`p-2.5 rounded-2xl border transition-all duration-300 flex items-center gap-2 ${
                     isJustUpdated
-                      ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200 shadow-xl ring-4 ring-cyan-400/40 animate-pulse'
+                      ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200 shadow-xl ring-2 ring-cyan-400/40 animate-pulse'
                       : hasAnswered
                       ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 shadow-md ring-2 ring-emerald-400/20'
                       : 'bg-slate-900/80 border-slate-800 text-slate-400'
@@ -584,11 +938,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                       {st.displayName}
                     </p>
                     <p className="text-[10px] text-slate-400 truncate">
-                      {isJustUpdated ? (
-                        <span className="text-cyan-300 font-black flex items-center gap-0.5">
-                          🔄 Diperbarui
-                        </span>
-                      ) : hasAnswered ? (
+                      {hasAnswered ? (
                         <span className="text-emerald-400 font-extrabold flex items-center gap-0.5">
                           ✓ Terekam
                         </span>
@@ -604,21 +954,21 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
         </div>
       </div>
 
-      {/* Bottom Remote Control Toolbar */}
-      <footer className="px-6 py-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between shrink-0 shadow-2xl">
+      {/* Bottom Touch Control Toolbar for PID */}
+      <footer className="px-6 py-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between shrink-0 shadow-2xl gap-3">
         {/* Question Nav */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 sm:gap-3">
           <button
             type="button"
             disabled={currentQuestionIndex === 0}
             onClick={() => handleGoToQuestion(currentQuestionIndex - 1)}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="h-12 px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-black text-sm flex items-center gap-2 transition-all cursor-pointer shadow-md active:scale-95"
           >
-            <ChevronLeft className="w-4 h-4" />
-            <span>Soal Sebelumnya</span>
+            <ChevronLeft className="w-5 h-5" />
+            <span className="hidden sm:inline">Soal Sebelumnya</span>
           </button>
 
-          <span className="px-3 text-xs font-bold text-slate-400">
+          <span className="px-3 text-sm font-black text-slate-300">
             {currentQuestionIndex + 1} / {quiz.questions.length}
           </span>
 
@@ -626,38 +976,38 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
             type="button"
             disabled={currentQuestionIndex >= quiz.questions.length - 1}
             onClick={() => handleGoToQuestion(currentQuestionIndex + 1)}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="h-12 px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-black text-sm flex items-center gap-2 transition-all cursor-pointer shadow-md active:scale-95"
           >
-            <span>Soal Berikutnya</span>
-            <ChevronRight className="w-4 h-4" />
+            <span className="hidden sm:inline">Soal Berikutnya</span>
+            <ChevronRight className="w-5 h-5" />
           </button>
         </div>
 
         {/* Central Controls: Lock & Reveal Answer */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <button
             type="button"
             onClick={handleToggleLock}
-            className={`px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+            className={`h-12 px-5 rounded-2xl font-black text-sm flex items-center gap-2 transition-all cursor-pointer active:scale-95 shadow-md ${
               isLocked
-                ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-lg'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                ? 'bg-rose-600 hover:bg-rose-700 text-white ring-2 ring-rose-400/40'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
             }`}
           >
-            {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
-            <span>{isLocked ? 'Buka Kunci Jawaban' : 'Kunci Jawaban'}</span>
+            {isLocked ? <Lock className="w-5 h-5" /> : <Unlock className="w-5 h-5" />}
+            <span>{isLocked ? 'Buka Kunci' : 'Kunci Jawaban'}</span>
           </button>
 
           <button
             type="button"
             onClick={handleToggleReveal}
-            className={`px-5 py-2 rounded-xl font-black text-xs flex items-center gap-2 transition-all cursor-pointer shadow-md ${
+            className={`h-12 px-5 rounded-2xl font-black text-sm flex items-center gap-2 transition-all cursor-pointer active:scale-95 shadow-lg ${
               showCorrectAnswer
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-400/40'
                 : 'bg-indigo-600 hover:bg-indigo-700 text-white'
             }`}
           >
-            {showCorrectAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            {showCorrectAnswer ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             <span>{showCorrectAnswer ? 'Sembunyikan Kunci' : 'Tampilkan Jawaban & Grafik'}</span>
           </button>
         </div>
@@ -667,15 +1017,16 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
           <button
             type="button"
             onClick={handleFinish}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:opacity-95 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg transition-all cursor-pointer"
+            className="h-12 px-5 sm:px-6 rounded-2xl bg-gradient-to-r from-amber-400 via-amber-500 to-orange-500 hover:opacity-95 text-slate-950 font-black text-sm flex items-center gap-2 shadow-xl shadow-amber-500/20 transition-all cursor-pointer active:scale-95"
           >
-            <BarChart2 className="w-4 h-4" />
-            <span>Selesaikan Kuis & Buka Analitik</span>
+            <BarChart2 className="w-5 h-5" />
+            <span className="hidden sm:inline">Selesaikan Kuis & Nilai</span>
+            <span className="sm:hidden">Selesai</span>
           </button>
         </div>
       </footer>
 
-      {/* QR Code Modal for Mobile Phone Scanner */}
+      {/* QR Code Modal for Mobile Phone Scanner (Opsional) */}
       {showQrModal && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl max-w-sm w-full text-center space-y-4 shadow-2xl">
@@ -694,22 +1045,18 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Buka aplikasi kamera di ponsel guru dan arahkan ke kode QR di bawah untuk membuka
-              kamera pemindai jawaban siswa secara langsung:
+              Jika Anda ingin berjalan ke baris belakang kelas sambil memindai dengan HP,
+              pindai kode QR di bawah:
             </p>
 
             <div className="p-4 bg-white rounded-2xl inline-block shadow-inner mx-auto">
-              <QRCodeSVG value={scannerUrl} size={200} level="M" />
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-slate-800 text-[11px] text-slate-400 break-all font-mono">
-              {scannerUrl}
+              <QRCodeSVG value={scannerUrl} size={180} level="M" />
             </div>
 
             <button
               type="button"
               onClick={() => setShowQrModal(false)}
-              className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl"
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer"
             >
               Tutup
             </button>
@@ -719,4 +1066,3 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     </div>
   );
 };
-
