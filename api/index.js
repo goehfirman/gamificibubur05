@@ -49,8 +49,14 @@ const usePostgres = isPostgresConfigured && isPostgresPreferred;
 let pool = null;
 if (usePostgres) {
   try {
+    const rawPgUrl = (process.env.POSTGRES_URL || process.env.DATABASE_URL || "")
+      .replace(/[^\x20-\x7E]/g, "")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/\?.*$/, "");
+
     pool = new Pool({
-      connectionString: (process.env.POSTGRES_URL || process.env.DATABASE_URL).replace(/\?.*$/, ""),
+      connectionString: rawPgUrl,
       ssl: { rejectUnauthorized: false }
     });
     pool.query(`

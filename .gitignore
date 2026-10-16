@@ -21,3 +21,4 @@ data/.mockData.cjs
 uploads/**
 !uploads/**/
 !uploads/**/.gitkeep
+.vercel
