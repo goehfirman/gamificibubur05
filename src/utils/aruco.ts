@@ -23,6 +23,7 @@ import { PaperOption, PaperCardStudentInfo } from '../types/paperMode';
 export function getMarkerOrientation(corners: { x: number; y: number }[]): {
   option: PaperOption;
   rotationDegrees: number;
+  isAmbiguous?: boolean;
 } {
   if (!corners || corners.length < 4) {
     return { option: 'A', rotationDegrees: 0 };

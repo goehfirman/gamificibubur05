@@ -64,7 +64,15 @@ export const PaperAnalyticsModal: React.FC<PaperAnalyticsModalProps> = ({
       quiz.questions.forEach((q, qIdx) => {
         const correctKey =
           q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
-        const studentAns = session.answersByQuestion?.[qIdx]?.[st.uid];
+        const answersForQ = session.answersByQuestion?.[qIdx] || {};
+        const numAbsent = st.absentNumber && Number(st.absentNumber) > 0 ? Number(st.absentNumber) : undefined;
+        const studentAns =
+          answersForQ[st.uid] ||
+          ((st as any).id && answersForQ[(st as any).id]) ||
+          (numAbsent ? answersForQ[`marker_${numAbsent}`] || answersForQ[numAbsent] : undefined) ||
+          Object.values(answersForQ).find(
+            (a) => a && (a.studentId === st.uid || (numAbsent && a.markerId === numAbsent))
+          );
 
         if (studentAns && studentAns.selectedOption) {
           answeredCount++;
@@ -144,7 +152,7 @@ export const PaperAnalyticsModal: React.FC<PaperAnalyticsModalProps> = ({
   // Save results to GAMI CLASS gradebook & point ledger
   const handleSaveToGradebook = async () => {
     setIsSavedToGradebook(true);
-    fireCelebrationConfetti();
+    fireCelebrationConfetti('submission');
 
     // Create formal quiz submissions
     studentResults.forEach((sr) => {
@@ -177,26 +185,191 @@ export const PaperAnalyticsModal: React.FC<PaperAnalyticsModalProps> = ({
     });
   };
 
-  // Export to Excel (.xlsx)
+  // Export to Excel (.xlsx) dengan Analisis Butir Soal & Nilai Akhir (Skala 100)
   const handleExportExcel = () => {
-    const rows = studentResults.map((sr, idx) => ({
-      Peringkat: idx + 1,
-      'No. Absen': sr.student.absentNumber ?? '-',
-      NIS: sr.student.studentNumber ?? '-',
-      'Nama Siswa': sr.student.displayName,
-      Kelas: activeClass?.name || '-',
-      'Jumlah Benar': sr.correctCount,
-      'Total Soal': sr.totalQuestions,
-      'Nilai Akhir (0-100)': sr.score,
-      'Poin Diperoleh': Math.round((sr.score / 100) * quiz.rewardPoints),
-    }));
+    const keyMap: Record<number, 'A' | 'B' | 'C' | 'D'> = { 0: 'A', 1: 'B', 2: 'C', 3: 'D' };
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
+    // =========================================================================
+    // 1. SHEET 1: ANALISIS BUTIR SOAL & REKAP NILAI (Skor per butir: 1 = Benar, 0 = Salah)
+    // =========================================================================
+    const scoreSheetRows = studentResults.map((sr, idx) => {
+      const row: Record<string, any> = {
+        'No': idx + 1,
+        'No. Absen': sr.student.absentNumber ?? '-',
+        'NIS': sr.student.studentNumber ?? '-',
+        'Nama Siswa': sr.student.displayName,
+        'Kelas': activeClass?.name || '-',
+      };
+
+      // Analisis skor setiap butir soal (1 jika benar, 0 jika salah)
+      quiz.questions.forEach((q, qIdx) => {
+        const correctKey = q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
+        const ans = sr.questionAnswers[qIdx];
+        row[`Soal ${qIdx + 1} (Kunci: ${correctKey})`] = ans?.isCorrect ? 1 : 0;
+      });
+
+      // Di bagian akhir tabel: rekapitulasi butir soal & Nilai Akhir (Skala 100)
+      row['Jumlah Benar'] = sr.correctCount;
+      row['Jumlah Salah'] = sr.totalQuestions - sr.correctCount;
+      row['Total Soal'] = sr.totalQuestions;
+      row['Nilai Akhir (Skala 100)'] = sr.score;
+      row['Poin Gami'] = Math.round((sr.score / 100) * quiz.rewardPoints);
+      row['Status Ketuntasan'] = sr.score >= 75 ? 'Tuntas' : 'Perlu Remedial';
+
+      return row;
+    });
+
+    // Baris Rekapitulasi di bawah tabel siswa
+    const summaryRowKey: Record<string, any> = {
+      'No': '',
+      'No. Absen': '',
+      'NIS': '',
+      'Nama Siswa': 'KUNCI JAWABAN',
+      'Kelas': '',
+    };
+    quiz.questions.forEach((q, qIdx) => {
+      const correctKey = q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
+      summaryRowKey[`Soal ${qIdx + 1} (Kunci: ${correctKey})`] = correctKey;
+    });
+    summaryRowKey['Jumlah Benar'] = '';
+    summaryRowKey['Jumlah Salah'] = '';
+    summaryRowKey['Total Soal'] = '';
+    summaryRowKey['Nilai Akhir (Skala 100)'] = '';
+    summaryRowKey['Poin Gami'] = '';
+    summaryRowKey['Status Ketuntasan'] = '';
+
+    const summaryRowTotalCorrect: Record<string, any> = {
+      'No': '',
+      'No. Absen': '',
+      'NIS': '',
+      'Nama Siswa': 'TOTAL SISWA BENAR',
+      'Kelas': '',
+    };
+    quiz.questions.forEach((q, qIdx) => {
+      const correctKey = q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
+      const qStat = questionStats[qIdx];
+      summaryRowTotalCorrect[`Soal ${qIdx + 1} (Kunci: ${correctKey})`] = qStat?.correctCount ?? 0;
+    });
+    summaryRowTotalCorrect['Jumlah Benar'] = studentResults.reduce((sum, r) => sum + r.correctCount, 0);
+    summaryRowTotalCorrect['Jumlah Salah'] = '';
+    summaryRowTotalCorrect['Total Soal'] = '';
+    summaryRowTotalCorrect['Nilai Akhir (Skala 100)'] = classAvgScore;
+    summaryRowTotalCorrect['Poin Gami'] = '';
+    summaryRowTotalCorrect['Status Ketuntasan'] = 'Rata-rata Kelas';
+
+    const summaryRowAccuracy: Record<string, any> = {
+      'No': '',
+      'No. Absen': '',
+      'NIS': '',
+      'Nama Siswa': 'DAYA SERAP / AKURASI (%)',
+      'Kelas': '',
+    };
+    quiz.questions.forEach((q, qIdx) => {
+      const correctKey = q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
+      const qStat = questionStats[qIdx];
+      summaryRowAccuracy[`Soal ${qIdx + 1} (Kunci: ${correctKey})`] = `${qStat?.accuracy ?? 0}%`;
+    });
+    summaryRowAccuracy['Jumlah Benar'] = '';
+    summaryRowAccuracy['Jumlah Salah'] = '';
+    summaryRowAccuracy['Total Soal'] = '';
+    summaryRowAccuracy['Nilai Akhir (Skala 100)'] = `${classAvgScore}%`;
+    summaryRowAccuracy['Poin Gami'] = '';
+    summaryRowAccuracy['Status Ketuntasan'] = '';
+
+    scoreSheetRows.push(summaryRowKey);
+    scoreSheetRows.push(summaryRowTotalCorrect);
+    scoreSheetRows.push(summaryRowAccuracy);
+
+    // =========================================================================
+    // 2. SHEET 2: ANALISIS PILIHAN JAWABAN SISWA (Huruf Opsi A/B/C/D)
+    // =========================================================================
+    const answerSheetRows = studentResults.map((sr, idx) => {
+      const row: Record<string, any> = {
+        'No': idx + 1,
+        'No. Absen': sr.student.absentNumber ?? '-',
+        'NIS': sr.student.studentNumber ?? '-',
+        'Nama Siswa': sr.student.displayName,
+        'Kelas': activeClass?.name || '-',
+      };
+
+      quiz.questions.forEach((q, qIdx) => {
+        const correctKey = q.correctOptionIndex !== undefined ? keyMap[q.correctOptionIndex] : 'A';
+        const ans = sr.questionAnswers[qIdx];
+        const selected = ans?.selected || '-';
+        row[`Soal ${qIdx + 1} (Kunci: ${correctKey})`] = ans?.isCorrect
+          ? `${selected} (✓)`
+          : selected !== '-'
+          ? `${selected} (✗)`
+          : '-';
+      });
+
+      row['Jumlah Benar'] = sr.correctCount;
+      row['Jumlah Salah'] = sr.totalQuestions - sr.correctCount;
+      row['Total Soal'] = sr.totalQuestions;
+      row['Nilai Akhir (Skala 100)'] = sr.score;
+
+      return row;
+    });
+
+    // =========================================================================
+    // 3. SHEET 3: STATISTIK & TINGKAT KESUKARAN BUTIR SOAL
+    // =========================================================================
+    const questionDifficultyRows = questionStats.map((qs) => {
+      let difficulty = 'Sedang';
+      if (qs.accuracy >= 80) difficulty = 'Mudah';
+      else if (qs.accuracy < 40) difficulty = 'Sukar / Perlu Remedial';
+
+      return {
+        'No. Soal': qs.questionIndex + 1,
+        'Kunci Jawaban': qs.correctKey,
+        'Jumlah Siswa Menjawab': qs.totalAnswers,
+        'Jumlah Benar': qs.correctCount,
+        'Jumlah Salah': Math.max(0, qs.totalAnswers - qs.correctCount),
+        'Tingkat Akurasi (%)': `${qs.accuracy}%`,
+        'Tingkat Kesukaran': difficulty,
+        'Pemilih Opsi A': qs.optionCounts.A,
+        'Pemilih Opsi B': qs.optionCounts.B,
+        'Pemilih Opsi C': qs.optionCounts.C,
+        'Pemilih Opsi D': qs.optionCounts.D,
+      };
+    });
+
+    // Buat Workbook Excel dan tambahkan sheets
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Hasil Paper Mode');
+
+    const wsScores = XLSX.utils.json_to_sheet(scoreSheetRows);
+    XLSX.utils.book_append_sheet(workbook, wsScores, 'Analisis Skor & Nilai');
+
+    const wsAnswers = XLSX.utils.json_to_sheet(answerSheetRows);
+    XLSX.utils.book_append_sheet(workbook, wsAnswers, 'Analisis Pilihan Jawaban');
+
+    const wsStats = XLSX.utils.json_to_sheet(questionDifficultyRows);
+    XLSX.utils.book_append_sheet(workbook, wsStats, 'Statistik Butir Soal');
+
+    // Auto-fit lebar kolom agar teks tidak terpotong
+    const setColWidths = (ws: XLSX.WorkSheet, data: Record<string, any>[]) => {
+      if (!data || data.length === 0) return;
+      const colKeys = Object.keys(data[0]);
+      ws['!cols'] = colKeys.map((key) => {
+        let maxLen = key.length;
+        data.forEach((row) => {
+          const valStr = String(row[key] ?? '');
+          if (valStr.length > maxLen) maxLen = valStr.length;
+        });
+        return { wch: Math.min(Math.max(maxLen + 3, 10), 38) };
+      });
+    };
+
+    setColWidths(wsScores, scoreSheetRows);
+    setColWidths(wsAnswers, answerSheetRows);
+    setColWidths(wsStats, questionDifficultyRows);
 
     const cleanTitle = quiz.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
-    XLSX.writeFile(workbook, `Hasil_PaperMode_${cleanTitle}_${activeClass?.name || 'Kelas'}.xlsx`);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(
+      workbook,
+      `Analisis_PaperMode_${cleanTitle}_${activeClass?.name || 'Kelas'}_${dateStr}.xlsx`
+    );
   };
 
   if (!isOpen) return null;

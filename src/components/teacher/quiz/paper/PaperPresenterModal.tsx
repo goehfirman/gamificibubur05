@@ -106,6 +106,8 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [visibleMarkersCount, setVisibleMarkersCount] = useState(0);
+  const [isCameraMaximized, setIsCameraMaximized] = useState(false);
+  const [showMaximizedRoster, setShowMaximizedRoster] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -511,7 +513,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
     setShowLiveStats(nextReveal);
 
     if (nextReveal) {
-      fireCelebrationConfetti();
+      fireCelebrationConfetti('submission');
       setIsLocked(true);
     }
 
@@ -636,12 +638,12 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
 
       {/* Main Unified PID Screen: Left Question Display, Right Camera & Student Live Responses */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Left Area: Large Question & Options for Class (60-65% width) */}
-        <div className="flex-1 flex flex-col p-6 sm:p-8 overflow-y-auto space-y-6">
+        {/* Left Area: Large Question & Options for Class (60-65% width) - Fixed presentation without container scrolling */}
+        <div className="flex-1 flex flex-col p-4 sm:p-6 lg:p-7 overflow-hidden space-y-3 sm:space-y-4 min-h-0 justify-between">
           {/* Question Prompt */}
-          <div className="bg-slate-900/90 border border-slate-800 p-6 sm:p-8 rounded-3xl shadow-xl space-y-4">
+          <div className="bg-slate-900/90 border border-slate-800 p-4 sm:p-5 lg:p-6 rounded-3xl shadow-xl space-y-2.5 shrink-0">
             <div className="flex items-center justify-between">
-              <span className="px-3.5 py-1.5 rounded-xl bg-indigo-500/20 text-indigo-300 font-black text-sm border border-indigo-500/30">
+              <span className="px-3 py-1 rounded-xl bg-indigo-500/20 text-indigo-300 font-black text-xs sm:text-sm border border-indigo-500/30">
                 Pertanyaan #{currentQuestionIndex + 1}
               </span>
               {isLocked && (
@@ -652,13 +654,13 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
               )}
             </div>
 
-            <div className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white leading-relaxed tracking-wide">
+            <div className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-white leading-snug tracking-wide max-h-[28vh] overflow-y-auto pr-1 [&_img]:max-h-28 sm:[&_img]:max-h-36 [&_img]:object-contain">
               <RichQuestionPrompt text={activeQuestion.prompt} fallbackImageUrl={activeQuestion.imageUrl} theme="dark" />
             </div>
           </div>
 
-          {/* Options Grid (A, B, C, D) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
+          {/* Options Grid (A, B, C, D) - 2x2 grid that fills available height evenly */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 grid-rows-2 gap-3 sm:gap-4 flex-1 min-h-0">
             {(['A', 'B', 'C', 'D'] as const).map((letter, optIdx) => {
               const optionText = activeQuestion.options?.[optIdx] || '';
               const isCorrectAnswerKey =
@@ -696,7 +698,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
               return (
                 <div
                   key={letter}
-                  className={`p-5 sm:p-6 rounded-3xl border-2 transition-all relative flex flex-col justify-between ${
+                  className={`p-3.5 sm:p-4 lg:p-5 rounded-2xl sm:rounded-3xl border-2 transition-all relative flex flex-col justify-between h-full overflow-hidden ${
                     isHighlightedCorrect
                       ? 'bg-emerald-950/70 border-emerald-400 ring-4 ring-emerald-400/30 shadow-2xl scale-[1.01]'
                       : isDimmed
@@ -704,24 +706,24 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                       : `${themeStyles.bg} ${themeStyles.border}`
                   }`}
                 >
-                  <div className="flex items-start gap-4">
+                  <div className="flex items-start gap-3 sm:gap-4 overflow-hidden">
                     <span
-                      className={`w-12 h-12 rounded-2xl font-black text-xl flex items-center justify-center shrink-0 shadow-lg ${
+                      className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl font-black text-lg sm:text-xl flex items-center justify-center shrink-0 shadow-lg ${
                         isHighlightedCorrect ? 'bg-emerald-400 text-slate-950' : themeStyles.badge
                       }`}
                     >
                       {letter}
                     </span>
-                    <div className="flex-1 text-lg sm:text-xl font-bold text-white pt-1 leading-snug">
+                    <div className="flex-1 text-base sm:text-lg lg:text-xl font-bold text-white pt-1 leading-snug break-words overflow-hidden">
                       <LatexRenderer content={optionText} />
                     </div>
                   </div>
 
                   {/* Live Stats bar when answer revealed */}
                   {showLiveStats && (
-                    <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs">
-                      <div className="flex-1 mr-4">
-                        <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
+                    <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-xs shrink-0">
+                      <div className="flex-1 mr-3">
+                        <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden">
                           <div
                             className={`h-full transition-all duration-500 rounded-full ${
                               isHighlightedCorrect ? 'bg-emerald-400' : 'bg-white/40'
@@ -730,7 +732,7 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                           />
                         </div>
                       </div>
-                      <span className="font-mono font-black text-sm text-white">
+                      <span className="font-mono font-black text-xs sm:text-sm text-white">
                         {count} Siswa ({percent}%)
                       </span>
                     </div>
@@ -740,14 +742,14 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
             })}
           </div>
 
-          {/* Explanation (Pembahasan) when answer revealed */}
+          {/* Explanation (Pembahasan) when answer revealed - Compact banner that never overflows */}
           {showCorrectAnswer && activeQuestion.explanation && (
-            <div className="p-6 bg-indigo-950/50 border border-indigo-500/40 rounded-3xl space-y-2">
-              <div className="flex items-center gap-2 text-indigo-300 font-extrabold text-sm">
-                <Sparkles className="w-4 h-4 text-amber-300" />
+            <div className="p-3 sm:p-4 bg-indigo-950/80 border border-indigo-500/40 rounded-2xl space-y-1 shrink-0 max-h-[16vh] overflow-y-auto shadow-lg">
+              <div className="flex items-center gap-2 text-indigo-300 font-extrabold text-xs sm:text-sm">
+                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
                 <span>Pembahasan Kunci Jawaban:</span>
               </div>
-              <div className="text-base text-indigo-100 leading-relaxed font-medium">
+              <div className="text-xs sm:text-sm text-indigo-100 leading-relaxed font-medium">
                 <LatexRenderer content={activeQuestion.explanation} />
               </div>
             </div>
@@ -807,11 +809,139 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                 >
                   {isCameraActive ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
                 </button>
+
+                {/* Maximize Camera Viewport Button */}
+                <button
+                  type="button"
+                  onClick={() => setIsCameraMaximized(true)}
+                  className="px-2 py-1.5 rounded-lg border text-xs cursor-pointer transition-all bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1 shadow-xs"
+                  title="Perbesar Tampilan Kamera (Layar Penuh ke Seluruh Murid)"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span className="text-[11px]">Perbesar</span>
+                </button>
               </div>
             </div>
 
-            {/* Live Camera Viewport */}
-            <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-slate-700 shadow-inner flex items-center justify-center">
+            {/* Live Camera Viewport - Seamlessly expands to full screen overlay when maximized */}
+            <div
+              className={
+                isCameraMaximized
+                  ? 'fixed inset-0 z-[60] bg-black flex flex-col justify-between overflow-hidden select-none'
+                  : 'relative aspect-video rounded-2xl overflow-hidden bg-black border border-slate-700 shadow-inner flex items-center justify-center'
+              }
+            >
+              {/* Maximized Mode: Top Overlay Bar */}
+              {isCameraMaximized && (
+                <div className="absolute top-0 left-0 right-0 z-30 px-5 py-3.5 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 flex items-center justify-between shadow-2xl">
+                  <div className="flex items-center gap-3">
+                    <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+                    <div>
+                      <h3 className="text-sm font-black text-white leading-tight">
+                        Kamera Pemindai PID (Layar Penuh)
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        Memindai seluruh kelas secara langsung
+                      </p>
+                    </div>
+                    <span className="ml-2 px-3 py-1 rounded-xl bg-indigo-500/20 text-indigo-300 font-bold text-xs border border-indigo-500/30">
+                      Soal #{currentQuestionIndex + 1} / {quiz.questions.length}
+                    </span>
+                    <span className="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 font-bold text-xs border border-emerald-500/30">
+                      <strong>{answeredCount}</strong> / {classStudents.length} Siswa Menjawab
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2.5">
+                    {videoDevices.length > 1 && (
+                      <select
+                        value={selectedDeviceId}
+                        onChange={(e) => setSelectedDeviceId(e.target.value)}
+                        className="px-2.5 py-1.5 bg-slate-800 border border-slate-700 text-xs font-bold rounded-xl text-slate-200 focus:outline-none"
+                      >
+                        {videoDevices.map((d, i) => (
+                          <option key={d.deviceId || i} value={d.deviceId}>
+                            {d.label || `Kamera ${i + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setSoundEnabled(!soundEnabled)}
+                      className={`p-2 rounded-xl border text-xs cursor-pointer transition-colors ${
+                        soundEnabled ? 'bg-slate-800 text-indigo-300 border-indigo-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'
+                      }`}
+                      title={soundEnabled ? 'Suara Deteksi Aktif' : 'Suara Deteksi Dibisukan'}
+                    >
+                      {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                    </button>
+
+                    {/* Toggle Daftar Siswa in Maximized Mode */}
+                    <button
+                      type="button"
+                      onClick={() => setShowMaximizedRoster((prev) => !prev)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                        showMaximizedRoster
+                          ? 'bg-indigo-600 border-indigo-400 text-white shadow-xs'
+                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+                      }`}
+                      title="Tampilkan / Sembunyikan Daftar Siswa di Sebelah Kanan"
+                    >
+                      <Users className="w-3.5 h-3.5 text-indigo-300" />
+                      <span>Daftar Siswa ({answeredCount}/{classStudents.length})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsCameraMaximized(false)}
+                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer"
+                      title="Kembalikan Tampilan Normal"
+                    >
+                      <Minimize2 className="w-4 h-4" />
+                      <span>Perkecil Tampilan</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Maximized Mode: Floating Center Detection Banner */}
+              {isCameraMaximized && (
+                <div className="absolute top-18 left-1/2 -translate-x-1/2 pointer-events-none z-20">
+                  <div className="px-4 py-1.5 rounded-full bg-slate-950/85 border border-emerald-500/50 backdrop-blur-md flex items-center gap-2 shadow-xl">
+                    {visibleMarkersCount > 0 ? (
+                      <>
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="text-xs font-black text-emerald-300">
+                          ✓ {visibleMarkersCount} Kartu Jawaban Terdeteksi Sekaligus
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-slate-400" />
+                        <span className="text-xs font-bold text-slate-300">
+                          Arahkan kamera ke arah murid di kelas...
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Normal Mode: Quick Maximize Button inside preview */}
+              {!isCameraMaximized && isCameraActive && (
+                <button
+                  type="button"
+                  onClick={() => setIsCameraMaximized(true)}
+                  className="absolute top-2 right-2 px-2 py-1 rounded-lg bg-black/75 hover:bg-black/95 text-white border border-white/20 text-xs font-bold backdrop-blur-md cursor-pointer transition-all flex items-center gap-1.5 shadow-lg z-20 group"
+                  title="Perbesar Kamera ke Layar Penuh"
+                >
+                  <Maximize2 className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px]">Perbesar</span>
+                </button>
+              )}
+
               {isCameraActive ? (
                 <>
                   <video
@@ -825,17 +955,20 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                     ref={canvasRef}
                     className="absolute inset-0 w-full h-full pointer-events-none"
                   />
-                  {/* Floating detection overlay badge */}
-                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
-                    <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-black text-emerald-400 border border-emerald-500/30">
-                      {visibleMarkersCount > 0
-                        ? `✓ ${visibleMarkersCount} Kartu Terdeteksi`
-                        : 'Mengarahkan ke kelas...'}
-                    </span>
-                    <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-bold text-slate-300 border border-slate-700">
-                      Auto-Scan
-                    </span>
-                  </div>
+
+                  {/* Normal Mode Floating detection overlay badge */}
+                  {!isCameraMaximized && (
+                    <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+                      <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-black text-emerald-400 border border-emerald-500/30">
+                        {visibleMarkersCount > 0
+                          ? `✓ ${visibleMarkersCount} Kartu Terdeteksi`
+                          : 'Mengarahkan ke kelas...'}
+                      </span>
+                      <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-bold text-slate-300 border border-slate-700">
+                        Auto-Scan
+                      </span>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="p-4 text-center space-y-2">
@@ -863,6 +996,208 @@ export const PaperPresenterModal: React.FC<PaperPresenterModalProps> = ({
                   >
                     Coba Hubungkan Lagi
                   </button>
+                </div>
+              )}
+
+              {/* Maximized Mode: Bottom Floating Control Toolbar */}
+              {isCameraMaximized && (
+                <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-5 py-3 rounded-2xl bg-slate-900/90 border border-slate-700/80 backdrop-blur-xl shadow-2xl">
+                  {/* Prev Question */}
+                  <button
+                    type="button"
+                    disabled={currentQuestionIndex === 0}
+                    onClick={() => handleGoToQuestion(currentQuestionIndex - 1)}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span className="hidden sm:inline">Sebelumnya</span>
+                  </button>
+
+                  <span className="px-2 text-xs font-mono font-bold text-slate-300">
+                    Soal {currentQuestionIndex + 1} / {quiz.questions.length}
+                  </span>
+
+                  {/* Next Question */}
+                  <button
+                    type="button"
+                    disabled={currentQuestionIndex >= quiz.questions.length - 1}
+                    onClick={() => handleGoToQuestion(currentQuestionIndex + 1)}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <span className="hidden sm:inline">Berikutnya</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  <div className="w-px h-6 bg-slate-700 mx-1" />
+
+                  {/* Lock Toggle */}
+                  <button
+                    type="button"
+                    onClick={handleToggleLock}
+                    className={`px-3.5 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      isLocked
+                        ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                        : 'bg-slate-800 hover:bg-slate-700 text-emerald-400'
+                    }`}
+                  >
+                    {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                    <span>{isLocked ? 'Terkunci' : 'Kunci Jawaban'}</span>
+                  </button>
+
+                  {/* Reveal Answer */}
+                  <button
+                    type="button"
+                    onClick={handleToggleReveal}
+                    className={`px-3.5 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      showCorrectAnswer
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                    }`}
+                  >
+                    {showCorrectAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    <span>{showCorrectAnswer ? 'Tutup Kunci' : 'Tampilkan Jawaban'}</span>
+                  </button>
+
+                  <div className="w-px h-6 bg-slate-700 mx-1" />
+
+                  {/* Minimize Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraMaximized(false)}
+                    className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-transform active:scale-95"
+                  >
+                    <Minimize2 className="w-4 h-4" />
+                    <span>Perkecil</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Arrow Toggle Button on the Right Edge (to show student list when hidden) */}
+              {isCameraMaximized && !showMaximizedRoster && (
+                <button
+                  type="button"
+                  onClick={() => setShowMaximizedRoster(true)}
+                  className="absolute top-1/2 -translate-y-1/2 right-0 z-40 flex items-center gap-2 pl-3.5 pr-2.5 py-3.5 rounded-l-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-2xl backdrop-blur-md border-y border-l border-indigo-400/50 cursor-pointer transition-all hover:pl-4.5 group"
+                  title="Klik panah untuk Menampilkan Daftar Siswa"
+                >
+                  <ChevronLeft className="w-5 h-5 text-indigo-200 group-hover:-translate-x-1 transition-transform animate-pulse" />
+                  <div className="flex flex-col items-start leading-tight">
+                    <span className="text-[11px] font-black tracking-wide">Daftar Siswa</span>
+                    <span className="text-[10px] text-indigo-200 font-mono font-bold">
+                      {answeredCount}/{classStudents.length}
+                    </span>
+                  </div>
+                </button>
+              )}
+
+              {/* Slide-out Student List Drawer in Maximized Mode */}
+              {isCameraMaximized && (
+                <div
+                  className={`absolute top-0 bottom-0 right-0 z-40 w-80 sm:w-96 bg-slate-900/95 backdrop-blur-xl border-l border-slate-700/80 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
+                    showMaximizedRoster ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+                  }`}
+                >
+                  {/* Arrow button attached to the left edge of the drawer to slide it back out */}
+                  <button
+                    type="button"
+                    onClick={() => setShowMaximizedRoster(false)}
+                    className="absolute top-1/2 -translate-y-1/2 -left-10 px-2.5 py-4 rounded-l-2xl bg-slate-800/95 hover:bg-slate-700 text-slate-300 hover:text-white border-y border-l border-slate-700 shadow-xl cursor-pointer transition-colors flex items-center justify-center group pointer-events-auto"
+                    title="Sembunyikan Daftar Siswa (Slide Tutup)"
+                  >
+                    <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                  </button>
+
+                  {/* Drawer Header */}
+                  <div className="p-4 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
+                        <Users className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider text-white">
+                          Daftar Respon Siswa
+                        </h4>
+                        <p className="text-[10px] text-slate-400">
+                          <strong className="text-emerald-400 font-bold">{answeredCount}</strong> dari {classStudents.length} sudah menjawab
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowMaximizedRoster(false)}
+                      className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 text-xs"
+                      title="Tutup Panel Siswa"
+                    >
+                      <span className="text-[10px] font-bold">Tutup</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Drawer Student Grid */}
+                  <div className="flex-1 p-3 overflow-y-auto grid grid-cols-2 gap-2 content-start">
+                    {classStudents.map((st, index) => {
+                      const markerId = st.absentNumber && st.absentNumber > 0 ? st.absentNumber : index + 1;
+                      const hasAnswered = Boolean(
+                        currentAnswers[st.uid] ||
+                        ((st as any).id && currentAnswers[(st as any).id]) ||
+                        currentAnswers[`marker_${markerId}`] ||
+                        currentAnswers[markerId] ||
+                        Object.values(currentAnswers).some(
+                          (a) => a && (a.markerId === markerId || a.studentId === st.uid || ((st as any).id && a.studentId === (st as any).id))
+                        )
+                      );
+                      const isJustUpdated =
+                        recentlyChangedStudentId === st.uid ||
+                        recentlyChangedStudentId === `marker_${markerId}` ||
+                        recentlyChangedStudentId === String(markerId);
+
+                      return (
+                        <div
+                          key={st.uid}
+                          className={`p-2.5 rounded-2xl border transition-all duration-300 flex items-center gap-2 ${
+                            isJustUpdated
+                              ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200 shadow-xl ring-2 ring-cyan-400/40 animate-pulse'
+                              : hasAnswered
+                              ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 shadow-md ring-2 ring-emerald-400/20'
+                              : 'bg-slate-900/80 border-slate-800 text-slate-400'
+                          }`}
+                        >
+                          <div
+                            className={`w-7 h-7 rounded-xl font-mono font-black text-xs flex items-center justify-center shrink-0 transition-colors ${
+                              isJustUpdated
+                                ? 'bg-cyan-400 text-slate-950'
+                                : hasAnswered
+                                ? 'bg-emerald-400 text-slate-950'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {isJustUpdated ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : hasAnswered ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : (
+                              st.absentNumber ?? index + 1
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold truncate text-white leading-tight">
+                              {st.displayName}
+                            </p>
+                            <p className="text-[10px] text-slate-400 truncate">
+                              {hasAnswered ? (
+                                <span className="text-emerald-400 font-extrabold flex items-center gap-0.5">
+                                  ✓ Terekam
+                                </span>
+                              ) : (
+                                `#Marker ${markerId}`
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

@@ -24,6 +24,8 @@ import {
   ChevronUp,
   Sparkles,
   BarChart2,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { PaperAnalyticsModal } from './PaperAnalyticsModal';
 import jsAruco2 from 'js-aruco2';
@@ -67,6 +69,7 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
   const [showStudentList, setShowStudentList] = useState(true);
   const [showQuestionOverlay, setShowQuestionOverlay] = useState(false);
   const [visibleMarkersCount, setVisibleMarkersCount] = useState(0);
+  const [isCameraMaximized, setIsCameraMaximized] = useState(false);
 
   const [recentDetections, setRecentDetections] = useState<
     {
@@ -647,7 +650,7 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
             }
 
             answeredStudentsRef.current[studentId] = option;
-            answeredStudentsRef.current[marker_] = option;
+            answeredStudentsRef.current[`marker_${markerId}`] = option;
             const answerPayload: PaperModeAnswer = {
               studentId,
               markerId,
@@ -847,6 +850,7 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
       />
 
       {/* Top Camera Status Bar */}
+      {!isCameraMaximized && (
       <header className="px-4 py-3 bg-slate-900/90 backdrop-blur-md flex items-center justify-between z-20 shrink-0 border-b border-slate-800">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/40">
@@ -903,6 +907,21 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
             <span className="hidden sm:inline">Lihat Soal</span>
           </button>
 
+          {/* Maximize Camera View */}
+          <button
+            type="button"
+            onClick={() => setIsCameraMaximized((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+              isCameraMaximized
+                ? 'bg-amber-600 border-amber-400 text-white shadow-lg ring-2 ring-amber-400/40'
+                : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white hover:bg-slate-700'
+            }`}
+            title={isCameraMaximized ? 'Kembalikan Tampilan Normal' : 'Perbesar Tampilan Kamera (Layar Penuh)'}
+          >
+            {isCameraMaximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{isCameraMaximized ? 'Perkecil' : 'Perbesar'}</span>
+          </button>
+
           {/* Switch Camera */}
           <button
             type="button"
@@ -935,6 +954,7 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
           </button>
         </div>
       </header>
+      )}
 
       {/* Main Content Area: Left (Camera + Question) & Right (Student List) */}
       <div className="flex-1 flex overflow-hidden">
@@ -1144,9 +1164,65 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
             </div>
           </div>
         )}
+
+        {/* Floating Mini Controls when Camera is Maximized */}
+        {isCameraMaximized && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-slate-950/90 border border-slate-700 backdrop-blur-xl shadow-2xl">
+            <span className="px-2.5 py-1 rounded-xl bg-indigo-500/20 text-indigo-300 font-black text-xs border border-indigo-500/30">
+              Soal #{currentQuestionIndex + 1}
+            </span>
+            <span className="text-xs font-bold text-slate-400 px-1">
+              <strong className="text-emerald-400">{answeredCount}</strong> / {classStudents.length}
+            </span>
+            <div className="w-px h-5 bg-slate-700" />
+            <button
+              type="button"
+              disabled={currentQuestionIndex === 0}
+              onClick={handlePrevQuestion}
+              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white cursor-pointer transition-colors"
+              title="Soal Sebelumnya"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-mono font-bold text-slate-400">
+              {currentQuestionIndex + 1}/{quiz.questions.length}
+            </span>
+            <button
+              type="button"
+              disabled={currentQuestionIndex >= quiz.questions.length - 1}
+              onClick={handleNextQuestion}
+              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white cursor-pointer transition-colors"
+              title="Soal Berikutnya"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <div className="w-px h-5 bg-slate-700" />
+            <button
+              type="button"
+              onClick={handleToggleLock}
+              className={`p-1.5 rounded-xl transition-colors cursor-pointer ${
+                isLocked
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                  : 'bg-slate-800 hover:bg-slate-700 text-emerald-400'
+              }`}
+              title={isLocked ? 'Buka Kunci Soal' : 'Kunci Soal'}
+            >
+              {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsCameraMaximized(false)}
+              className="p-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+              title="Kembalikan Tampilan Normal"
+            >
+              <Minimize2 className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         </div>
 
         {/* Question Displayed Directly Below Camera */}
+        {!isCameraMaximized && (
         <div className="shrink-0 bg-slate-900 border-t border-slate-800 p-3 sm:p-4 shadow-2xl">
           {/* Header Row: Question Prompt & Nav/Action Controls */}
           <div className="flex items-start justify-between gap-3">
@@ -1207,10 +1283,11 @@ export const PaperScannerModal: React.FC<PaperScannerModalProps> = ({
             </div>
           )}
         </div>
+        )}
         </div>
 
         {/* Right Sidebar: Live Student Roster Grid */}
-        {showStudentList && (
+        {showStudentList && !isCameraMaximized && (
           <div className="w-80 lg:w-96 border-l border-slate-800 bg-slate-900/95 backdrop-blur-md flex flex-col shrink-0 z-20">
             <div className="p-3.5 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
               <div>
